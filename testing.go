@@ -71,10 +71,12 @@ func (ta *TestAuth) TestSessionCookie(t *testing.T, user *User) *http.Cookie {
 	}
 
 	payload := &sessionPayload{
-		Sub:   user.Sub,
-		Email: user.Email,
-		Name:  user.Name,
-		Exp:   time.Now().UTC().Add(ta.cfg.SessionTTL).Unix(),
+		Sub:    user.Sub,
+		Email:  user.Email,
+		Name:   user.Name,
+		OrgID:  user.OrgID,
+		Claims: user.Claims,
+		Exp:    time.Now().UTC().Add(ta.cfg.SessionTTL).Unix(),
 	}
 
 	encrypted, err := encryptSession(payload, ta.sessionKey)

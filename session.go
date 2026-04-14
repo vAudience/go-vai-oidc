@@ -17,20 +17,34 @@ import (
 // Keycloak confirmation page. The token is protected by AES-256-GCM encryption — if the
 // session key is compromised, the JWT is exposed, but so is the entire session.
 type sessionPayload struct {
-	Sub     string `json:"sub"`
-	Email   string `json:"email"`
-	Name    string `json:"name"`
-	IDToken string `json:"idt"` // raw ID token for Keycloak logout hint
-	Exp     int64  `json:"exp"` // unix timestamp
+	Sub     string            `json:"sub"`
+	Email   string            `json:"email"`
+	Name    string            `json:"name"`
+	OrgID   string            `json:"oid,omitempty"` // organization ID (resolved by UserResolver)
+	Claims  map[string]string `json:"clm,omitempty"` // extra claims from ExtraClaims config
+	IDToken string            `json:"idt"`            // raw ID token for Keycloak logout hint
+	Exp     int64             `json:"exp"`            // unix timestamp
 }
 
 // toUser converts the payload to a public User.
 func (p *sessionPayload) toUser() *User {
 	return &User{
-		Sub:   p.Sub,
-		Email: p.Email,
-		Name:  p.Name,
+		Sub:    p.Sub,
+		Email:  p.Email,
+		Name:   p.Name,
+		OrgID:  p.OrgID,
+		Claims: p.Claims,
 	}
+}
+
+// fromUser updates the payload's user-visible fields from a User.
+// Preserves IDToken and Exp.
+func (p *sessionPayload) fromUser(u *User) {
+	p.Sub = u.Sub
+	p.Email = u.Email
+	p.Name = u.Name
+	p.OrgID = u.OrgID
+	p.Claims = u.Claims
 }
 
 // encryptSession serializes and encrypts a session payload.

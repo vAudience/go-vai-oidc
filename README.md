@@ -56,6 +56,7 @@ func handleDashboard(w http.ResponseWriter, r *http.Request) {
     // user.Sub   — Keycloak subject ID (stable, unique)
     // user.Email — "toni.wagner@vaudience.ai"
     // user.Name  — "Toni Wagner"
+    // user.OrgID — "00000000-0000-0000-0000-000000000000" (from UserResolver)
     fmt.Fprintf(w, "Hello, %s", user.Name)
 }
 ```
@@ -96,7 +97,11 @@ vaioidc.Config{
     CookiePath     string        // Cookie path (default: "/")
     InsecureCookie bool          // Set true to allow cookies over plain HTTP (default: false = HTTPS-only)
     Scopes         []string      // OIDC scopes (default: openid, profile, email)
-    Logger         *slog.Logger  // Logger (default: slog.Default())
+
+    // Optional: Identity resolution
+    ExtraClaims  []string                                                  // Extra ID token claims to extract into User.Claims
+    UserResolver func(ctx context.Context, user *User) (*User, error)      // Called during callback to enrich user
+    Logger       *slog.Logger                                              // Logger (default: slog.Default())
 }
 ```
 
@@ -173,13 +178,58 @@ For HTMX services (Skope), a simple `<a>` tag is all you need — the redirect c
 
 ```go
 type User struct {
-    Sub   string // Keycloak subject ID — use this as the stable user identifier
-    Email string // e.g. "toni.wagner@vaudience.ai"
-    Name  string // e.g. "Toni Wagner"
+    Sub    string            // Keycloak subject ID — use this as the stable user identifier
+    Email  string            // e.g. "toni.wagner@vaudience.ai"
+    Name   string            // e.g. "Toni Wagner"
+    OrgID  string            // Organization ID (resolved by UserResolver)
+    Claims map[string]string // Extra claims from ExtraClaims config
 }
 ```
 
 `Sub` is the Keycloak user UUID. It's stable across email changes and identity provider changes. Use it as your foreign key for user-specific data.
+
+`OrgID` is populated by the `UserResolver` callback during login. For vAI services, this comes from Obol's `/api/v1/identity/ensure` endpoint.
+
+## UserResolver (Org Resolution via Obol)
+
+Every vAI service should configure a `UserResolver` to resolve the user's org:
+
+```go
+auth, err := vaioidc.New(ctx, vaioidc.Config{
+    // ... standard OIDC config ...
+    UserResolver: func(ctx context.Context, user *vaioidc.User) (*vaioidc.User, error) {
+        resp, err := obolClient.EnsureIdentity(ctx, user.Sub, user.Email, user.Name)
+        if err != nil {
+            return nil, err // login rejected
+        }
+        if len(resp.Memberships) == 1 {
+            user.OrgID = resp.Memberships[0].OrgID
+        }
+        // Multiple orgs → leave OrgID empty, handle with org picker page
+        return user, nil
+    },
+})
+```
+
+## UpdateSession (Org Selection)
+
+For multi-org users, the `UserResolver` may leave `OrgID` empty. Use `UpdateSession` to set it after the user picks an org:
+
+```go
+// POST /select-org handler
+func handleSelectOrg(auth *vaioidc.Auth) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        orgID := r.FormValue("org_id")
+        if err := auth.UpdateSession(w, r, func(u *vaioidc.User) {
+            u.OrgID = orgID
+        }); err != nil {
+            http.Error(w, "session error", 500)
+            return
+        }
+        http.Redirect(w, r, "/dashboard", http.StatusFound)
+    }
+}
+```
 
 ## Testing
 

@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.2.0 — 2026-04-14
+
+Identity resolution and multi-org support.
+
+### Added
+- `User.OrgID` — first-class org ID field, resolved by `UserResolver` callback
+- `User.Claims` — extra claims from ID token, configured via `Config.ExtraClaims`
+- `Config.ExtraClaims` — list of additional ID token claim names to extract
+- `Config.UserResolver` — callback invoked during OIDC callback to enrich user (resolve org, validate, etc.)
+- `Auth.UpdateSession()` — mutate an existing session cookie (e.g., org selection post-login)
+- `sessionPayload.fromUser()` — internal helper for session mutation
+
+### Changed
+- `extractUser()` now accepts `extraClaims` parameter for custom claim extraction
+- Session payload includes `OrgID` and `Claims` fields (backward compatible — empty if unused)
+- `TestSessionCookie()` preserves OrgID and Claims in test cookies
+
+---
+
 ## v0.1.0 — 2026-04-14
 
 Initial release.

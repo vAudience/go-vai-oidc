@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -90,7 +91,8 @@ func (p *oidcProvider) exchange(ctx context.Context, code, codeVerifier string) 
 
 // extractUser reads identity claims from a verified ID token.
 // Missing claims result in empty fields. Claims extraction failure is logged at debug level.
-func (p *oidcProvider) extractUser(idToken *gooidc.IDToken, logger *slog.Logger) *User {
+// extraClaims specifies additional claim names to extract into User.Claims.
+func (p *oidcProvider) extractUser(idToken *gooidc.IDToken, logger *slog.Logger, extraClaims []string) *User {
 	var claims map[string]interface{}
 	if err := idToken.Claims(&claims); err != nil {
 		logger.Debug("failed to extract ID token claims",
@@ -106,6 +108,24 @@ func (p *oidcProvider) extractUser(idToken *gooidc.IDToken, logger *slog.Logger)
 	}
 	if name, ok := claims[claimName].(string); ok {
 		user.Name = name
+	}
+
+	// Extract extra claims into User.Claims map.
+	if len(extraClaims) > 0 && len(claims) > 0 {
+		user.Claims = make(map[string]string, len(extraClaims))
+		for _, key := range extraClaims {
+			if v, ok := claims[key]; ok {
+				switch tv := v.(type) {
+				case string:
+					user.Claims[key] = tv
+				default:
+					// Non-string values (arrays, objects, numbers) are JSON-serialized.
+					if b, err := json.Marshal(tv); err == nil {
+						user.Claims[key] = string(b)
+					}
+				}
+			}
+		}
 	}
 
 	return user

@@ -1,6 +1,7 @@
 package vaioidc
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"log/slog"
@@ -36,9 +37,19 @@ type Config struct {
 	// Optional: OIDC.
 	Scopes []string // OIDC scopes (default: [openid, profile, email])
 
+	// Optional: Claims & identity resolution.
+	ExtraClaims  []string     // Extra ID token claim names to extract into User.Claims
+	UserResolver UserResolver // Called during OIDC callback to enrich user (resolve org, etc.)
+
 	// Optional: Observability.
 	Logger *slog.Logger // Structured logger (default: slog.Default())
 }
+
+// UserResolver is called after ID token verification during the OIDC callback.
+// It receives the user extracted from the token and must return the final user
+// (with OrgID set, etc.) or an error to reject the login.
+// If nil, no resolution is performed and the user is stored as-is.
+type UserResolver func(ctx context.Context, user *User) (*User, error)
 
 // secureCookie returns true if cookies should have the Secure flag.
 func (c *Config) secureCookie() bool {

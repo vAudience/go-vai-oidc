@@ -123,6 +123,20 @@ func (a *Auth) SkipPathsWithPrefix(prefix string) []string {
 	}
 }
 
+// UpdateSession reads the current session, applies the mutation function to the User,
+// and writes the updated session back as a new cookie. IDToken and Exp are preserved.
+// Use this for org selection (setting OrgID after login) or updating Claims.
+func (a *Auth) UpdateSession(w http.ResponseWriter, r *http.Request, mutate func(*User)) error {
+	payload, err := readSessionCookie(r, a.sessionKey, a.cfg.CookieName)
+	if err != nil {
+		return err
+	}
+	user := payload.toUser()
+	mutate(user)
+	payload.fromUser(user)
+	return setSessionCookie(w, payload, a.sessionKey, a.cfg.CookieName, a.cfg.CookiePath, a.cfg.secureCookie())
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -249,13 +263,31 @@ func (a *Auth) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Extract user claims.
-	user := a.provider.extractUser(idToken, a.logger)
+	user := a.provider.extractUser(idToken, a.logger, a.cfg.ExtraClaims)
+
+	// Call UserResolver if configured.
+	if a.cfg.UserResolver != nil {
+		resolved, resolveErr := a.cfg.UserResolver(r.Context(), user)
+		if resolveErr != nil {
+			a.logger.Warn("OIDC callback: UserResolver rejected login",
+				slog.String(logKeyComponent, logComponent),
+				slog.String(logKeyError, resolveErr.Error()),
+				slog.String(logKeySub, user.Sub),
+				slog.String(logKeyClientIP, clientIP(r)),
+			)
+			http.Redirect(w, r, a.cfg.LogoutRedirect, http.StatusFound)
+			return
+		}
+		user = resolved
+	}
 
 	// Create and encrypt session.
 	payload := &sessionPayload{
 		Sub:     user.Sub,
 		Email:   user.Email,
 		Name:    user.Name,
+		OrgID:   user.OrgID,
+		Claims:  user.Claims,
 		IDToken: rawIDToken,
 		Exp:     time.Now().UTC().Add(a.cfg.SessionTTL).Unix(),
 	}

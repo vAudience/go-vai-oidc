@@ -13,6 +13,14 @@ type User struct {
 
 	// Name is the user's display name from the ID token (may be empty).
 	Name string `json:"name"`
+
+	// OrgID is the user's organization ID, resolved by the UserResolver callback.
+	// Empty if no UserResolver is configured or the resolver left it unset.
+	OrgID string `json:"org_id,omitempty"`
+
+	// Claims holds additional claims extracted from the ID token.
+	// Populated from Config.ExtraClaims. Non-string claim values are JSON-serialized.
+	Claims map[string]string `json:"claims,omitempty"`
 }
 
 // contextKey is an unexported type for context keys to prevent collisions.
