@@ -127,6 +127,9 @@ func (a *Auth) SkipPathsWithPrefix(prefix string) []string {
 // and writes the updated session back as a new cookie. IDToken and Exp are preserved.
 // Use this for org selection (setting OrgID after login) or updating Claims.
 func (a *Auth) UpdateSession(w http.ResponseWriter, r *http.Request, mutate func(*User)) error {
+	if mutate == nil {
+		return nil
+	}
 	payload, err := readSessionCookie(r, a.sessionKey, a.cfg.CookieName)
 	if err != nil {
 		return err
@@ -272,6 +275,15 @@ func (a *Auth) handleCallback(w http.ResponseWriter, r *http.Request) {
 			a.logger.Warn("OIDC callback: UserResolver rejected login",
 				slog.String(logKeyComponent, logComponent),
 				slog.String(logKeyError, resolveErr.Error()),
+				slog.String(logKeySub, user.Sub),
+				slog.String(logKeyClientIP, clientIP(r)),
+			)
+			http.Redirect(w, r, a.cfg.LogoutRedirect, http.StatusFound)
+			return
+		}
+		if resolved == nil {
+			a.logger.Warn("OIDC callback: UserResolver returned nil user",
+				slog.String(logKeyComponent, logComponent),
 				slog.String(logKeySub, user.Sub),
 				slog.String(logKeyClientIP, clientIP(r)),
 			)

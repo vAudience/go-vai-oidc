@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.2.2 — 2026-04-14
+
+Nil safety fixes from code review.
+
+### Fixed
+- `UpdateSession`: nil guard on `mutate` callback — returns nil (no-op) instead of panic
+- OIDC callback: nil guard on `UserResolver` return — `(nil, nil)` treated as login rejection instead of panic
+- `versions.yaml`: updated to match actual version
+
+---
+
 ## v0.2.1 — 2026-04-14
 
 Documentation and test alignment.
