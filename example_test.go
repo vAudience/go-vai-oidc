@@ -15,7 +15,7 @@ func ExampleUserFromContext() {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user := vaioidc.UserFromContext(r.Context())
 		if user != nil {
-			fmt.Printf("Hello, %s (%s)\n", user.Name, user.Email)
+			fmt.Printf("Hello, %s (%s) org=%s\n", user.Name, user.Email, user.OrgID)
 		}
 	})
 
@@ -26,11 +26,12 @@ func ExampleUserFromContext() {
 		Sub:   "user-123",
 		Email: "toni@vaudience.ai",
 		Name:  "Toni",
+		OrgID: "00000000-0000-0000-0000-000000000000",
 	})
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
-	// Output: Hello, Toni (toni@vaudience.ai)
+	// Output: Hello, Toni (toni@vaudience.ai) org=00000000-0000-0000-0000-000000000000
 }
 
 func ExampleAuth_Routes() {
@@ -54,13 +55,21 @@ func ExampleTestAuth_TestSessionCookie() {
 	// Create a test session cookie for middleware tests.
 	testAuth := vaioidc.NewTestAuth(nil)
 
-	user := &vaioidc.User{Sub: "test-user", Email: "dev@vaudience.ai", Name: "Dev"}
+	user := &vaioidc.User{
+		Sub:   "test-user",
+		Email: "dev@vaudience.ai",
+		Name:  "Dev",
+		OrgID: "00000000-0000-0000-0000-000000000000",
+		Claims: map[string]string{
+			"department": "engineering",
+		},
+	}
 	cookie := testAuth.TestSessionCookie(nil, user)
 
 	req := httptest.NewRequest("GET", "/dashboard", nil)
 	req.AddCookie(cookie)
 
-	// The cookie will pass RequireSession middleware.
+	// The cookie will pass RequireSession middleware and preserve all fields.
 	var captured *vaioidc.User
 	handler := testAuth.RequireSession()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		captured = vaioidc.UserFromContext(r.Context())
@@ -69,6 +78,6 @@ func ExampleTestAuth_TestSessionCookie() {
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
-	fmt.Printf("%s (%s)\n", captured.Name, captured.Email)
-	// Output: Dev (dev@vaudience.ai)
+	fmt.Printf("%s (%s) org=%s dept=%s\n", captured.Name, captured.Email, captured.OrgID, captured.Claims["department"])
+	// Output: Dev (dev@vaudience.ai) org=00000000-0000-0000-0000-000000000000 dept=engineering
 }

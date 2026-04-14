@@ -126,14 +126,65 @@ func TestDecrypt_GarbageInput(t *testing.T) {
 
 func TestSessionPayload_ToUser(t *testing.T) {
 	p := &sessionPayload{
-		Sub:   "sub-1",
-		Email: "a@b.com",
-		Name:  "A B",
+		Sub:    "sub-1",
+		Email:  "a@b.com",
+		Name:   "A B",
+		OrgID:  "org-uuid",
+		Claims: map[string]string{"dept": "eng"},
 	}
 	u := p.toUser()
 	assert.Equal(t, "sub-1", u.Sub)
 	assert.Equal(t, "a@b.com", u.Email)
 	assert.Equal(t, "A B", u.Name)
+	assert.Equal(t, "org-uuid", u.OrgID)
+	assert.Equal(t, "eng", u.Claims["dept"])
+}
+
+func TestSessionPayload_FromUser(t *testing.T) {
+	p := &sessionPayload{
+		Sub:     "original-sub",
+		Email:   "old@email.com",
+		IDToken: "keep-this",
+		Exp:     12345,
+	}
+	u := &User{
+		Sub:    "new-sub",
+		Email:  "new@email.com",
+		Name:   "New Name",
+		OrgID:  "new-org",
+		Claims: map[string]string{"key": "val"},
+	}
+	p.fromUser(u)
+	assert.Equal(t, "new-sub", p.Sub)
+	assert.Equal(t, "new@email.com", p.Email)
+	assert.Equal(t, "New Name", p.Name)
+	assert.Equal(t, "new-org", p.OrgID)
+	assert.Equal(t, "val", p.Claims["key"])
+	// IDToken and Exp preserved
+	assert.Equal(t, "keep-this", p.IDToken)
+	assert.Equal(t, int64(12345), p.Exp)
+}
+
+func TestEncryptDecrypt_RoundTrip_WithOrgIDAndClaims(t *testing.T) {
+	key := testKey(t)
+	payload := &sessionPayload{
+		Sub:     "user-456",
+		Email:   "test@vaudience.ai",
+		Name:    "Test",
+		OrgID:   "00000000-0000-0000-0000-000000000000",
+		Claims:  map[string]string{"tenant": "acme", "role": "admin"},
+		IDToken: "jwt-token",
+		Exp:     time.Now().UTC().Add(time.Hour).Unix(),
+	}
+
+	encrypted, err := encryptSession(payload, key)
+	require.NoError(t, err)
+
+	decrypted, err := decryptSession(encrypted, key)
+	require.NoError(t, err)
+	assert.Equal(t, payload.OrgID, decrypted.OrgID)
+	assert.Equal(t, payload.Claims, decrypted.Claims)
+	assert.Equal(t, "acme", decrypted.Claims["tenant"])
 }
 
 func TestSetAndReadSessionCookie(t *testing.T) {

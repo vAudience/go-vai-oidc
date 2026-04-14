@@ -1,7 +1,8 @@
-// Package vaioidc provides drop-in OIDC browser login for vAI Go services.
+// Package vaioidc provides drop-in OIDC browser login with org resolution for vAI Go services.
 //
 // It handles the complete Keycloak OIDC Authorization Code Flow with PKCE,
-// AES-256-GCM encrypted session cookies, and chi-compatible middleware.
+// AES-256-GCM encrypted session cookies, org resolution via UserResolver callback,
+// and chi-compatible middleware.
 //
 // Usage:
 //
@@ -12,6 +13,7 @@
 //	    ClientSecret:  cfg.OIDC.ClientSecret,
 //	    CallbackURL:   cfg.OIDC.CallbackURL,
 //	    SessionSecret: cfg.OIDC.SessionSecret, // base64-encoded 32 bytes
+//	    UserResolver:  myObolResolver,          // resolves user.OrgID via Obol
 //	})
 //	if err != nil {
 //	    log.Fatal(err)
@@ -24,5 +26,5 @@
 // Protected handlers access the authenticated user via context:
 //
 //	user := vaioidc.UserFromContext(r.Context())
-//	fmt.Println(user.Email) // "toni@vaudience.ai"
+//	fmt.Println(user.Email, user.OrgID)
 package vaioidc

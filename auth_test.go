@@ -541,6 +541,77 @@ func TestHandleCallback_MissingCode(t *testing.T) {
 // UserFromContext
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// UpdateSession tests
+// ---------------------------------------------------------------------------
+
+func TestUpdateSession_SetOrgID(t *testing.T) {
+	key := testKey(t)
+	a := &Auth{
+		sessionKey: key,
+		cfg: Config{
+			CookieName:     "vai_test",
+			CookiePath:     "/",
+			InsecureCookie: true,
+			SessionTTL:     time.Hour,
+		},
+	}
+
+	// Create initial session without OrgID.
+	payload := &sessionPayload{
+		Sub:     "user-1",
+		Email:   "a@b.com",
+		Name:    "A",
+		IDToken: "original-jwt",
+		Exp:     time.Now().UTC().Add(time.Hour).Unix(),
+	}
+	encrypted, err := encryptSession(payload, key)
+	require.NoError(t, err)
+
+	// Build request with the session cookie.
+	req := httptest.NewRequest("POST", "/select-org", nil)
+	req.AddCookie(&http.Cookie{Name: "vai_test", Value: encrypted})
+	w := httptest.NewRecorder()
+
+	// Mutate: set OrgID.
+	err = a.UpdateSession(w, req, func(u *User) {
+		u.OrgID = "new-org-id"
+	})
+	require.NoError(t, err)
+
+	// Read back the updated cookie.
+	cookies := w.Result().Cookies()
+	require.Len(t, cookies, 1)
+
+	updated, err := decryptSession(cookies[0].Value, key)
+	require.NoError(t, err)
+	assert.Equal(t, "new-org-id", updated.OrgID)
+	assert.Equal(t, "user-1", updated.Sub)
+	assert.Equal(t, "a@b.com", updated.Email)
+	assert.Equal(t, "original-jwt", updated.IDToken) // preserved
+	assert.Equal(t, payload.Exp, updated.Exp)        // preserved
+}
+
+func TestUpdateSession_NoSession(t *testing.T) {
+	key := testKey(t)
+	a := &Auth{
+		sessionKey: key,
+		cfg:        Config{CookieName: "vai_test"},
+	}
+
+	req := httptest.NewRequest("POST", "/select-org", nil) // no cookie
+	w := httptest.NewRecorder()
+
+	err := a.UpdateSession(w, req, func(u *User) {
+		u.OrgID = "should-not-matter"
+	})
+	require.Error(t, err)
+}
+
+// ---------------------------------------------------------------------------
+// UserFromContext
+// ---------------------------------------------------------------------------
+
 func TestUserFromContext_NilWhenAbsent(t *testing.T) {
 	req := httptest.NewRequest("GET", "/", nil)
 	assert.Nil(t, UserFromContext(req.Context()))
