@@ -1,0 +1,135 @@
+package vaioidc
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"log/slog"
+
+	gooidc "github.com/coreos/go-oidc/v3/oidc"
+	"golang.org/x/oauth2"
+)
+
+// oidcProvider wraps go-oidc and oauth2 for Keycloak OIDC operations.
+type oidcProvider struct {
+	provider      *gooidc.Provider
+	verifier      *gooidc.IDTokenVerifier
+	oauth2Cfg     oauth2.Config
+	endSessionURL string // extracted from OIDC discovery claims
+}
+
+// discover performs OIDC discovery and returns a configured provider.
+func discover(ctx context.Context, keycloakURL, realm, clientID, clientSecret, callbackURL string, scopes []string) (*oidcProvider, error) {
+	issuer := fmt.Sprintf(keycloakIssuerTemplate, keycloakURL, realm)
+
+	provider, err := gooidc.NewProvider(ctx, issuer)
+	if err != nil {
+		return nil, fmt.Errorf("discover issuer %q: %w", issuer, errors.Join(ErrDiscoveryFailed, err))
+	}
+
+	verifier := provider.Verifier(&gooidc.Config{
+		ClientID: clientID,
+	})
+
+	oauth2Cfg := oauth2.Config{
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		Endpoint:     provider.Endpoint(),
+		RedirectURL:  callbackURL,
+		Scopes:       scopes,
+	}
+
+	// Extract end_session_endpoint from discovery claims (Keycloak provides this).
+	var claims struct {
+		EndSessionEndpoint string `json:"end_session_endpoint"`
+	}
+	_ = provider.Claims(&claims) // non-fatal if missing
+
+	return &oidcProvider{
+		provider:      provider,
+		verifier:      verifier,
+		oauth2Cfg:     oauth2Cfg,
+		endSessionURL: claims.EndSessionEndpoint,
+	}, nil
+}
+
+// authCodeURL generates the Keycloak authorization URL with state and PKCE challenge.
+func (p *oidcProvider) authCodeURL(state, challenge string) string {
+	return p.oauth2Cfg.AuthCodeURL(state,
+		oauth2.SetAuthURLParam("code_challenge", challenge),
+		oauth2.SetAuthURLParam("code_challenge_method", pkceChallengeMethod),
+	)
+}
+
+// exchange trades the authorization code and PKCE verifier for tokens.
+// Returns both the raw ID token string (needed for logout hint) and the verified IDToken.
+func (p *oidcProvider) exchange(ctx context.Context, code, codeVerifier string) (string, *gooidc.IDToken, error) {
+	token, err := p.oauth2Cfg.Exchange(ctx, code,
+		oauth2.SetAuthURLParam("code_verifier", codeVerifier),
+	)
+	if err != nil {
+		return "", nil, fmt.Errorf("exchange code: %w", errors.Join(ErrTokenExchange, err))
+	}
+
+	rawIDToken, ok := token.Extra(extraIDToken).(string)
+	if !ok || rawIDToken == "" {
+		return "", nil, fmt.Errorf("missing id_token in token response: %w", ErrTokenExchange)
+	}
+
+	idToken, err := p.verifier.Verify(ctx, rawIDToken)
+	if err != nil {
+		return "", nil, fmt.Errorf("verify id_token: %w", errors.Join(ErrTokenVerification, err))
+	}
+
+	return rawIDToken, idToken, nil
+}
+
+// extractUser reads identity claims from a verified ID token.
+// Missing claims result in empty fields. Claims extraction failure is logged at debug level.
+func (p *oidcProvider) extractUser(idToken *gooidc.IDToken, logger *slog.Logger) *User {
+	var claims map[string]interface{}
+	if err := idToken.Claims(&claims); err != nil {
+		logger.Debug("failed to extract ID token claims",
+			slog.String(logKeyComponent, logComponent),
+			slog.String(logKeyError, err.Error()),
+		)
+	}
+
+	user := &User{Sub: idToken.Subject}
+
+	if email, ok := claims[claimEmail].(string); ok {
+		user.Email = email
+	}
+	if name, ok := claims[claimName].(string); ok {
+		user.Name = name
+	}
+
+	return user
+}
+
+// generatePKCE creates a PKCE verifier and its S256 challenge.
+func generatePKCE() (verifier, challenge string, err error) {
+	b := make([]byte, pkceVerifierBytes)
+	if _, err := rand.Read(b); err != nil {
+		return "", "", fmt.Errorf("generate PKCE verifier: %w", err)
+	}
+
+	verifier = base64.RawURLEncoding.EncodeToString(b)
+	h := sha256.Sum256([]byte(verifier))
+	challenge = base64.RawURLEncoding.EncodeToString(h[:])
+
+	return verifier, challenge, nil
+}
+
+// generateState creates a cryptographic random state parameter (hex-encoded).
+func generateState() (string, error) {
+	b := make([]byte, stateBytes)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate state: %w", err)
+	}
+	return hex.EncodeToString(b), nil
+}
