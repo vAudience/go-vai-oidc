@@ -7,7 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	vaioidc "github.com/vAudience/vai-oidc"
+	vaioidc "github.com/vAudience/go-vai-oidc"
 )
 
 func ExampleUserFromContext() {

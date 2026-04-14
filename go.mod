@@ -1,4 +1,4 @@
-module github.com/vAudience/vai-oidc
+module github.com/vAudience/go-vai-oidc
 
 go 1.25.5
 
