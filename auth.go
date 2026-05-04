@@ -36,7 +36,7 @@ func New(ctx context.Context, cfg Config) (*Auth, error) {
 		return nil, err
 	}
 
-	provider, err := discover(ctx, cfg.KeycloakURL, cfg.Realm, cfg.ClientID, cfg.ClientSecret, cfg.CallbackURL, cfg.Scopes)
+	provider, err := discover(ctx, cfg.KeycloakURL, cfg.Realm, cfg.ClientID, cfg.ClientSecret, cfg.CallbackURL, cfg.IssuerURLOverride, cfg.Scopes)
 	if err != nil {
 		return nil, err // discover() already wraps with ErrDiscoveryFailed
 	}

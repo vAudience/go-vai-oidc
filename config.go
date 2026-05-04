@@ -43,6 +43,37 @@ type Config struct {
 
 	// Optional: Observability.
 	Logger *slog.Logger // Structured logger (default: slog.Default())
+
+	// Optional: Issuer URL override.
+	//
+	// When set, vai-oidc DISCOVERS at the URL composed from KeycloakURL+
+	// Realm, but ACCEPTS the value of IssuerURLOverride as the issuer in
+	// the discovery response (and uses it to verify ID-token `iss`
+	// claims). This enables the kubernetes-native pattern where:
+	//
+	//   • the consumer pod calls discovery via the cluster-internal
+	//     Keycloak Service URL (e.g.
+	//     http://keycloak.<ns>.svc.cluster.local:8080),
+	//
+	//   • Keycloak (configured with `--hostname=keycloak.<public_base>`)
+	//     returns the PUBLIC URL as the issuer field —
+	//
+	//   • without this override, the strict issuer-URL check inside
+	//     go-oidc rejects the mismatch and discovery fails.
+	//
+	// Set to the SAME URL Keycloak returns as the issuer (i.e. the
+	// public-base URL). Empty = use the strict default (discovery URL
+	// must equal the issuer field).
+	//
+	// Internally implemented via go-oidc's `InsecureIssuerURLContext`
+	// which is correctly named for the case where the API is exposed
+	// publicly and the consumer chooses to bypass the check; in our
+	// kubernetes-native deployment topology the override is a
+	// LEGITIMATE configuration, not a security relaxation, because
+	// the cluster-internal URL is just a different network path to
+	// the same identity provider that issues the same tokens with
+	// the same signing keys.
+	IssuerURLOverride string
 }
 
 // UserResolver is called after ID token verification during the OIDC callback.

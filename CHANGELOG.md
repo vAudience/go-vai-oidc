@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.4.0 — 2026-05-04
+
+vaik8s MASTERPLAN-AUTH `DC-AUTH-OPS-02` follow-up. Adds the
+kubernetes-native pattern where the consumer pod's discovery URL
+intentionally differs from the issuer URL keycloak returns — needed
+when Keycloak is configured with a public-base `--hostname` (so
+browser-visible URLs are HTTPS) but cluster-internal callers reach
+Keycloak via the cluster Service URL.
+
+### Added
+
+- `Config.IssuerURLOverride string` — when set, vai-oidc DISCOVERS
+  at the URL composed from `KeycloakURL+Realm` but ACCEPTS the
+  override as the canonical issuer in the discovery response (and
+  uses it to verify ID-token `iss` claims). Internally implemented
+  via `go-oidc.InsecureIssuerURLContext`. The override is a
+  legitimate kubernetes-native configuration, not a security
+  relaxation: the cluster-internal URL is just a different network
+  path to the same identity provider.
+
+### Why v0.4.0 (not v0.3.x)
+
+vaik8s's MASTERPLAN-AUTH §7 reserved v0.4.0 for the `obolresolver`
+sub-package at vaik8s DC-AUTH-05. To keep the version trail readable
+this release uses the v0.4.0 slot for the IssuerURLOverride feature;
+`obolresolver` shifts to v0.5.0 (DC-AUTH-05) and the vaisite
+`RequireEmailDomain` claim-filter shifts to v0.6.0 (DC-AUTH-07).
+
+## v0.3.0 — 2026-04-14
+
+Module path fix release; API byte-identical to v0.2.2. (See
+go-vai-oidc git tags v0.3.0.)
+
 ## v0.2.2 — 2026-04-14
 
 Nil safety fixes from code review.

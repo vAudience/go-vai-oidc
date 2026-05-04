@@ -24,12 +24,23 @@ type oidcProvider struct {
 }
 
 // discover performs OIDC discovery and returns a configured provider.
-func discover(ctx context.Context, keycloakURL, realm, clientID, clientSecret, callbackURL string, scopes []string) (*oidcProvider, error) {
-	issuer := fmt.Sprintf(keycloakIssuerTemplate, keycloakURL, realm)
+// When `issuerOverride` is non-empty, discovery is performed at the
+// composed URL but the override is treated as the canonical issuer —
+// `InsecureIssuerURLContext` propagates the expected issuer into
+// go-oidc's verifier so subsequent ID-token `iss` checks compare
+// against the override. See Config.IssuerURLOverride for the
+// kubernetes-native rationale.
+func discover(ctx context.Context, keycloakURL, realm, clientID, clientSecret, callbackURL, issuerOverride string, scopes []string) (*oidcProvider, error) {
+	discoveryURL := fmt.Sprintf(keycloakIssuerTemplate, keycloakURL, realm)
+	expectedIssuer := discoveryURL
+	if issuerOverride != "" {
+		expectedIssuer = issuerOverride
+		ctx = gooidc.InsecureIssuerURLContext(ctx, expectedIssuer)
+	}
 
-	provider, err := gooidc.NewProvider(ctx, issuer)
+	provider, err := gooidc.NewProvider(ctx, discoveryURL)
 	if err != nil {
-		return nil, fmt.Errorf("discover issuer %q: %w", issuer, errors.Join(ErrDiscoveryFailed, err))
+		return nil, fmt.Errorf("discover issuer %q: %w", discoveryURL, errors.Join(ErrDiscoveryFailed, err))
 	}
 
 	verifier := provider.Verifier(&gooidc.Config{
