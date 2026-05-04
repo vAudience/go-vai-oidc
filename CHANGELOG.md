@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.5.0 — 2026-05-04
+
+vaik8s MASTERPLAN-AUTH `DC-AUTH-OPS-04` follow-up. Adds kc_idp_hint
+and prompt query-param passthrough from `/auth/login` to the
+Keycloak authorize URL. Lets consumer apps render a "Sign in with
+Google" button that hrefs `/auth/login?kc_idp_hint=google` —
+Keycloak then federates straight to Google instead of showing its
+own login page first.
+
+### Added
+
+- `/auth/login?kc_idp_hint=<value>` is forwarded to Keycloak as
+  `kc_idp_hint=<value>` on the authorize URL. Skips Keycloak's
+  realm login page when the operator wants the consumer's SPA to
+  drive IdP selection directly.
+- `/auth/login?prompt=<value>` is forwarded similarly. Useful
+  values: `login` (force credential prompt), `none` (silent
+  refresh), `consent` (force consent screen).
+- The forward whitelist is hardcoded to `kc_idp_hint` + `prompt`
+  so unknown query params cannot leak into the authorize URL.
+
+### Changed
+
+- `(*oidcProvider).authCodeURL` signature gained a third
+  `extra map[string]string` argument; downstream callers
+  populate it via the new `authCodeExtras` helper.
+
 ## v0.4.0 — 2026-05-04
 
 vaik8s MASTERPLAN-AUTH `DC-AUTH-OPS-02` follow-up. Adds the

@@ -69,12 +69,25 @@ func discover(ctx context.Context, keycloakURL, realm, clientID, clientSecret, c
 	}, nil
 }
 
-// authCodeURL generates the Keycloak authorization URL with state and PKCE challenge.
-func (p *oidcProvider) authCodeURL(state, challenge string) string {
-	return p.oauth2Cfg.AuthCodeURL(state,
+// authCodeURL generates the Keycloak authorization URL with state and
+// PKCE challenge. `extra` carries arbitrary additional query
+// parameters the consumer wants forwarded to Keycloak's authorize
+// endpoint — typically `kc_idp_hint=google` to skip Keycloak's own
+// login page and federate straight to the named IdP, or
+// `prompt=login` to force a fresh credential prompt. Empty `extra`
+// preserves the pre-v0.5.0 behaviour exactly.
+func (p *oidcProvider) authCodeURL(state, challenge string, extra map[string]string) string {
+	opts := []oauth2.AuthCodeOption{
 		oauth2.SetAuthURLParam("code_challenge", challenge),
 		oauth2.SetAuthURLParam("code_challenge_method", pkceChallengeMethod),
-	)
+	}
+	for k, v := range extra {
+		if k == "" || v == "" {
+			continue
+		}
+		opts = append(opts, oauth2.SetAuthURLParam(k, v))
+	}
+	return p.oauth2Cfg.AuthCodeURL(state, opts...)
 }
 
 // exchange trades the authorization code and PKCE verifier for tokens.

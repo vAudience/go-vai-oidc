@@ -181,7 +181,15 @@ func (a *Auth) handleLogin(w http.ResponseWriter, r *http.Request) {
 	setOIDCCookie(w, cookieOIDCState, stateValue, a.cfg.CookiePath, a.cfg.secureCookie())
 	setOIDCCookie(w, cookiePKCEVerifier, verifier, a.cfg.CookiePath, a.cfg.secureCookie())
 
-	authURL := a.provider.authCodeURL(state, challenge)
+	// v0.5.0: forward selected query params from /auth/login to
+	// Keycloak's authorize endpoint. `kc_idp_hint` skips Keycloak's
+	// own login page and federates directly to the named IdP
+	// (typical use: kc_idp_hint=google). `prompt` forces a fresh
+	// credential prompt. Other unknown params are dropped — only
+	// the IdP whitelist below is forwarded so a malicious caller
+	// cannot inject arbitrary OAuth params.
+	extra := authCodeExtras(r)
+	authURL := a.provider.authCodeURL(state, challenge, extra)
 
 	a.logger.Debug("OIDC login redirect",
 		slog.String(logKeyComponent, logComponent),
@@ -189,6 +197,22 @@ func (a *Auth) handleLogin(w http.ResponseWriter, r *http.Request) {
 	)
 
 	http.Redirect(w, r, authURL, http.StatusFound)
+}
+
+// authCodeExtras returns the whitelisted /auth/login query params
+// to forward to the authorize endpoint. v0.5.0 ships kc_idp_hint
+// + prompt; future cycles may extend (e.g. login_hint) — each
+// addition is a deliberate decision so unknown params can't slip
+// through silently.
+func authCodeExtras(r *http.Request) map[string]string {
+	out := map[string]string{}
+	q := r.URL.Query()
+	for _, k := range []string{"kc_idp_hint", "prompt"} {
+		if v := q.Get(k); v != "" {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // handleCallback processes the OIDC callback from Keycloak.
