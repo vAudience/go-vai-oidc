@@ -41,6 +41,29 @@ type Config struct {
 	ExtraClaims  []string     // Extra ID token claim names to extract into User.Claims
 	UserResolver UserResolver // Called during OIDC callback to enrich user (resolve org, etc.)
 
+	// Optional: Email domain gate.
+	//
+	// When set, the OIDC callback rejects logins whose `email` claim's
+	// domain (the part after `@`) does not match this value. Comparison
+	// is case-insensitive; the configured value is lowercased once at
+	// applyDefaults() so the runtime check is a plain string equality.
+	//
+	// Validated at New(): non-empty values must contain no `@` and no
+	// whitespace. The realm-side flow is the primary IdP gate (e.g. a
+	// `vaisite-google-only` browser flow constraining the upstream IdP
+	// to Google); this field is the in-app belt-and-braces check that
+	// keeps a misconfigured realm from federating arbitrary identities
+	// into the consumer service.
+	//
+	// For Google Workspace tenants, set this to your primary domain
+	// (e.g. "vaudience.ai"). For non-Google IdPs the same `email`-claim
+	// rule applies — vai-oidc does not consult Google's `hd` claim
+	// because IdP-portability matters more than tightening the check
+	// against one provider.
+	//
+	// Empty (default) = no domain enforcement.
+	RequireEmailDomain string
+
 	// Optional: Observability.
 	Logger *slog.Logger // Structured logger (default: slog.Default())
 
@@ -110,6 +133,11 @@ func (c *Config) applyDefaults() {
 	if c.Logger == nil {
 		c.Logger = slog.Default()
 	}
+	// Lowercase the email-domain rule once so runtime comparisons are
+	// plain equality. Empty stays empty.
+	if c.RequireEmailDomain != "" {
+		c.RequireEmailDomain = strings.ToLower(c.RequireEmailDomain)
+	}
 }
 
 // validate checks that all required fields are set and the session secret is valid.
@@ -138,6 +166,16 @@ func (c *Config) validate() ([]byte, error) {
 	}
 	if len(key) != aesKeyLength {
 		return nil, fmt.Errorf("SessionSecret decodes to %d bytes, need %d: %w", len(key), aesKeyLength, ErrSessionKeyInvalid)
+	}
+
+	// Validate RequireEmailDomain shape: a domain must not contain
+	// `@` (would imply a full email was set in error) and must not
+	// contain whitespace (would imply a config-rendering bug).
+	if c.RequireEmailDomain != "" {
+		if strings.ContainsAny(c.RequireEmailDomain, requireEmailDomainForbiddenRunes) {
+			return nil, fmt.Errorf("RequireEmailDomain must not contain '@' or whitespace, got %q: %w",
+				c.RequireEmailDomain, ErrInvalidConfig)
+		}
 	}
 
 	// Warn on insecure config (http callback without InsecureCookie).

@@ -292,6 +292,32 @@ func (a *Auth) handleCallback(w http.ResponseWriter, r *http.Request) {
 	// Extract user claims.
 	user := a.provider.extractUser(idToken, a.logger, a.cfg.ExtraClaims)
 
+	// Email-domain gate (DC-AUTH-07). Runs BEFORE UserResolver so a
+	// custom resolver does not need to know about the rule and so the
+	// rejection log line never carries resolver-side state. Empty
+	// RequireEmailDomain skips the check (existing behaviour).
+	if domainErr := enforceEmailDomain(user, a.cfg.RequireEmailDomain); domainErr != nil {
+		// extractUser cannot return nil today, but enforceEmailDomain
+		// is documented nil-tolerant and the gate sits before any
+		// UserResolver call — guard the log site so a future
+		// extractor change cannot crash the rejection log path.
+		var sub, emailDomain string
+		if user != nil {
+			sub = user.Sub
+			emailDomain = emailDomainOf(user.Email)
+		}
+		a.logger.Warn(logMsgEmailDomainRejected,
+			slog.String(logKeyComponent, logComponent),
+			slog.String(logKeyReason, domainReason(domainErr)),
+			slog.String(logKeySub, sub),
+			slog.String(logKeyEmailDomain, emailDomain),
+			slog.String(logKeyRequiredDomain, a.cfg.RequireEmailDomain),
+			slog.String(logKeyClientIP, clientIP(r)),
+		)
+		http.Redirect(w, r, a.cfg.LogoutRedirect, http.StatusFound)
+		return
+	}
+
 	// Call UserResolver if configured.
 	if a.cfg.UserResolver != nil {
 		resolved, resolveErr := a.cfg.UserResolver(r.Context(), user)

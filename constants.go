@@ -76,13 +76,24 @@ const logComponent = "vai-oidc"
 
 // Log keys.
 const (
-	logKeyComponent  = "component"
-	logKeyClientID   = "client_id"
-	logKeyIssuer     = "issuer"
-	logKeyError      = "error"
-	logKeySub        = "sub"
-	logKeyEmail      = "email"
-	logKeyReason     = "reason"
-	logKeyClientIP   = "client_ip"
-	logKeyPath       = "path"
+	logKeyComponent      = "component"
+	logKeyClientID       = "client_id"
+	logKeyIssuer         = "issuer"
+	logKeyError          = "error"
+	logKeySub            = "sub"
+	logKeyEmail          = "email"
+	logKeyReason         = "reason"
+	logKeyClientIP       = "client_ip"
+	logKeyPath           = "path"
+	logKeyEmailDomain    = "email_domain"
+	logKeyRequiredDomain = "required_domain"
+)
+
+// Email-domain gate.
+const (
+	emailAtSeparator                  = "@"
+	requireEmailDomainForbiddenRunes  = "@ \t\r\n"
+	logMsgEmailDomainRejected         = "OIDC callback: email domain rejected"
+	logReasonEmailDomainMismatch      = "email_domain_mismatch"
+	logReasonEmailDomainMissingClaim  = "email_claim_missing_or_malformed"
 )

@@ -1,5 +1,44 @@
 # Changelog
 
+## v0.7.0 — 2026-05-07
+
+vaik8s MASTERPLAN-AUTH `DC-AUTH-07` Phase A. Adds the
+**`Config.RequireEmailDomain`** email-domain gate so consumers can
+enforce a tenant-domain claim filter without writing their own
+UserResolver — used by vaisite to replace its bespoke `hd`-claim
+check (DC-NXS-09 → DC-AUTH-07 migration). ADR-084 in vaik8s records
+the rationale for picking `email`-domain over Google's `hd` claim
+(IdP-portability; the realm-side `vaisite-google-only` browser flow
+is the primary IdP gate).
+
+### Added
+
+- `Config.RequireEmailDomain string` — when non-empty, the OIDC
+  callback rejects logins whose verified id_token `email` claim
+  domain part (case-insensitive, last-`@`-split) does not match.
+  Empty (default) preserves existing behaviour.
+- `applyDefaults()` lowercases the configured value so runtime
+  comparison is plain equality.
+- `validate()` rejects `@` and whitespace runes in the configured
+  value (prevents accidental full-email or rendering-bug values
+  from passing through).
+- New helper `enforceEmailDomain(user, requiredDomain)` runs the
+  gate; called from `handleCallback` between claim extraction and
+  `UserResolver` so custom resolvers don't need to know the rule.
+- New typed sentinels `ErrEmailDomainMismatch` + `ErrEmailClaimMissing`
+  for callers that want to programmatically inspect the rejection.
+- 18 unit tests across config validation, helper boundaries
+  (last-`@`-wins, missing/malformed email, leading-`@`), and
+  reason-string mapping.
+
+### Notes
+
+- The masterplan §4 row 8 originally projected this functional bump
+  at `v0.5.0`. That tag was consumed by DC-AUTH-OPS-04 (kc_idp_hint
+  passthrough) and `v0.6.0` by DC-AUTH-05 Phase A; the DC-AUTH-07
+  bump therefore lands at `v0.7.0`. vaik8s ADR-084 records the
+  correction.
+
 ## v0.6.0 — 2026-05-07
 
 vaik8s MASTERPLAN-AUTH `DC-AUTH-05` Phase A. Introduces the

@@ -39,3 +39,16 @@ var (
 	// ErrTokenVerification indicates the ID token signature or claims could not be verified.
 	ErrTokenVerification = errors.New("vai-oidc: ID token verification failed")
 )
+
+// Identity-gate errors — returned by the Config.RequireEmailDomain gate.
+var (
+	// ErrEmailDomainMismatch indicates the verified id_token's email
+	// claim domain did not match Config.RequireEmailDomain.
+	ErrEmailDomainMismatch = errors.New("vai-oidc: email domain does not match required domain")
+
+	// ErrEmailClaimMissing indicates Config.RequireEmailDomain is set
+	// but the verified id_token's email claim is missing or malformed
+	// (no `@` separator). The login is rejected — the gate cannot
+	// prove a match without a parseable email.
+	ErrEmailClaimMissing = errors.New("vai-oidc: email claim missing or malformed; cannot enforce required domain")
+)

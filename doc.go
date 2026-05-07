@@ -27,4 +27,11 @@
 //
 //	user := vaioidc.UserFromContext(r.Context())
 //	fmt.Println(user.Email, user.OrgID)
+//
+// Email-domain gate (v0.7.0+): set Config.RequireEmailDomain to a
+// bare domain (e.g. "vaudience.ai") to reject logins whose verified
+// id_token email-claim domain does not match. Comparison is
+// case-insensitive; the gate runs before UserResolver. Empty value
+// (the default) disables the check. Intended as belt-and-braces on
+// top of the realm-side IdP flow (e.g. a Google-only browser flow).
 package vaioidc
