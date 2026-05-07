@@ -1,5 +1,43 @@
 # Changelog
 
+## v0.6.0 — 2026-05-07
+
+vaik8s MASTERPLAN-AUTH `DC-AUTH-05` Phase A. Introduces the
+**`obolresolver` sub-package** — the canonical UserResolver that
+delegates org-resolution to obol's `POST /api/v1/identity/ensure`.
+Replaces the per-consumer `NewDefaultOrgResolver` MVP shape used
+by folios (DC-AUTH-02), skope (DC-AUTH-03), and aigentflow
+(DC-AUTH-04). From DC-AUTH-05 onward every vai-oidc consumer
+imports this sub-package verbatim.
+
+### Added
+
+- New sub-package `github.com/vAudience/go-vai-oidc/obolresolver`
+  with:
+  - `New(Config{BaseURL, Client, Timeout, AllowEmptyMembership})
+    UserResolver`. Returns nil when BaseURL is empty so callers
+    can wire it unconditionally.
+  - `IdentityEnsureRequest`/`IdentityEnsureMembership`/
+    `IdentityEnsureResponse` wire-shape structs mirroring obol's
+    `obol.handler.identity.go` request+response contract.
+  - Minimal `HTTPClient` interface (`Do(req)`) — caller supplies a
+    charon-S2S-authenticated client (charonmw.Client) in production
+    or any HTTPClient impl in tests. NO transitive charonmw
+    dependency.
+- 9 unit tests covering happy-path, empty-membership reject (default)
+  and pass-through (AllowEmptyMembership), 5xx propagation, envelope-
+  error propagation, nil-Client defensive resolver, transport
+  errors, request-shape verification.
+
+### Notes
+
+- spec contract: `auth-platform-spec.md` §5.3 (UserResolver shape) +
+  §5.5 (failure-mode matrix).
+- The MVP `NewDefaultOrgResolver` callers (folios, skope, aigentflow)
+  migrate to `obolresolver.New(...)` in their respective DC-AUTH-NN
+  follow-ups (no upstream code changes required in this v0.6.0 — the
+  sub-package is purely additive).
+
 ## v0.5.0 — 2026-05-04
 
 vaik8s MASTERPLAN-AUTH `DC-AUTH-OPS-04` follow-up. Adds kc_idp_hint
