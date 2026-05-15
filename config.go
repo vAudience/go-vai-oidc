@@ -67,6 +67,28 @@ type Config struct {
 	// Optional: Observability.
 	Logger *slog.Logger // Structured logger (default: slog.Default())
 
+	// Optional: Discovery retry budget.
+	//
+	// DC-OIDC-RETRY-01 (v0.8.0). When non-zero, `New()` wraps the
+	// initial OIDC discovery call in a jittered exponential-backoff
+	// loop bounded by this wall-clock budget. Permanent-class errors
+	// (4xx other than 408/429, malformed JSON) short-circuit
+	// immediately; transient-class errors (5xx, 408, 429, raw
+	// network, timeouts) retry until success or budget exhaustion.
+	//
+	// Default: 90 seconds (DiscoveryRetryBudgetDefault). Set
+	// explicitly to 0 to disable retries entirely and preserve the
+	// pre-v0.8.0 single-shot semantics.
+	//
+	// Rationale: closes the cold-cluster-boot failure class where a
+	// consumer pod starts before keycloak finishes its own bootstrap,
+	// the single discovery call gets "connection refused", and the
+	// consumer locks in an `app.OIDCAuth = nil` state forever (until
+	// a manual pod restart). 90s is generous enough to absorb
+	// keycloak boot times on a fresh microk8s and matches the same
+	// retry budget shape used in the DC-OBOL-FAILOPEN-01 family.
+	DiscoveryRetryBudget time.Duration
+
 	// Optional: Issuer URL override.
 	//
 	// When set, vai-oidc DISCOVERS at the URL composed from KeycloakURL+
@@ -132,6 +154,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Logger == nil {
 		c.Logger = slog.Default()
+	}
+	// DC-OIDC-RETRY-01: zero-value opts in to the default 90s budget.
+	// Set explicitly to a negative value to disable retries entirely
+	// (we treat <=0 as disabled at the call site).
+	if c.DiscoveryRetryBudget == 0 {
+		c.DiscoveryRetryBudget = DiscoveryRetryBudgetDefault
 	}
 	// Lowercase the email-domain rule once so runtime comparisons are
 	// plain equality. Empty stays empty.

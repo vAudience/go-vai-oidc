@@ -36,7 +36,13 @@ func New(ctx context.Context, cfg Config) (*Auth, error) {
 		return nil, err
 	}
 
-	provider, err := discover(ctx, cfg.KeycloakURL, cfg.Realm, cfg.ClientID, cfg.ClientSecret, cfg.CallbackURL, cfg.IssuerURLOverride, cfg.Scopes)
+	// DC-OIDC-RETRY-01 (v0.8.0): wrap discover() in a jittered retry
+	// budget so a cold-boot keycloak-not-yet-reachable race no longer
+	// produces a permanently-broken consumer pod. Set
+	// `Config.DiscoveryRetryBudget = -1` (or any negative) to opt out
+	// and preserve the pre-v0.8.0 single-shot semantics.
+	provider, err := discoverWithRetry(ctx, cfg.Logger, cfg.DiscoveryRetryBudget,
+		cfg.KeycloakURL, cfg.Realm, cfg.ClientID, cfg.ClientSecret, cfg.CallbackURL, cfg.IssuerURLOverride, cfg.Scopes)
 	if err != nil {
 		return nil, err // discover() already wraps with ErrDiscoveryFailed
 	}

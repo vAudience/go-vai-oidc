@@ -89,6 +89,36 @@ const (
 	logKeyRequiredDomain = "required_domain"
 )
 
+// Discovery retry (DC-OIDC-RETRY-01, v0.8.0).
+const (
+	// DiscoveryRetryBudgetDefault is the default wall-clock budget
+	// New() spends retrying transient OIDC discovery failures
+	// before giving up. Public so consumers can override with
+	// `cfg.DiscoveryRetryBudget = DiscoveryRetryBudgetDefault / 2`
+	// or similar without hardcoding the value.
+	DiscoveryRetryBudgetDefault = 90 * time.Second
+
+	// discoveryRetryPerAttemptTimeout bounds any single discovery
+	// attempt so one slow probe cannot consume the whole budget.
+	// Calls inside the loop derive a child context with this
+	// timeout (or the remaining budget, whichever is smaller).
+	discoveryRetryPerAttemptTimeout = 15 * time.Second
+
+	// discoveryRetryBaseDelay is the first backoff sleep. Doubles
+	// each attempt up to discoveryRetryMaxDelay; jitter ±50%.
+	discoveryRetryBaseDelay = 500 * time.Millisecond
+	discoveryRetryMaxDelay  = 8 * time.Second
+)
+
+// Discovery retry log keys + messages.
+const (
+	logKeyDiscoveryAttempt = "attempt"
+	logKeyDiscoveryElapsed = "elapsed"
+	logKeyDiscoveryBackoff = "next_backoff"
+	logMsgDiscoveryRetry   = "vai-oidc: discovery retry attempt"
+	logMsgDiscoverySuccess = "vai-oidc: discovery succeeded after retry"
+)
+
 // Email-domain gate.
 const (
 	emailAtSeparator                  = "@"
