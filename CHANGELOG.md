@@ -1,5 +1,52 @@
 # Changelog
 
+## v0.9.0 — 2026-05-15
+
+vaik8s MASTERPLAN-RESILIENCE `DC-OIDC-READINESS-01` Layer B. Adds a
+non-blocking constructor `NewBackground(ctx, cfg) *DeferredAuth`
+that performs OIDC discovery on a background goroutine and exposes
+`Ready()` + `Get()` + `Err()` so consumers can serve `/health` as
+soon as the HTTP listener binds and gate Kubernetes' Service
+rotation via `/ready`. Pods that have not yet completed discovery
+return 503 from `/ready` and stay out of the load balancer until
+discovery succeeds. The brown-out window becomes 503-on-/ready
+(Kubernetes-aware) rather than connection-refused (Kubernetes-
+blind).
+
+Layer A (v0.8.0 `discoverWithRetry`) is still the underlying
+retry mechanism — `NewBackground` calls `New` which calls
+`discoverWithRetry`. The change is purely about WHEN the
+discovery is waited on (background goroutine vs main goroutine).
+
+### Added
+
+- `deferred.go::DeferredAuth` — the handle. Carries a ready chan,
+  the final `*Auth` slot, and the final error. Mutex-guarded for
+  concurrent `Get()` callers.
+- `deferred.go::NewBackground(ctx, cfg) *DeferredAuth` — spawns
+  the discovery goroutine and returns immediately.
+- `DeferredAuth.Ready() bool` — non-blocking; true after the
+  background `New` call returns.
+- `DeferredAuth.Get() (*Auth, error)` — blocks until ready; safe
+  for concurrent callers.
+- `DeferredAuth.Err() error` — non-blocking error peek for
+  `/ready` handlers.
+- `deferred_test.go` — 5 tests (happy/error/ready-before-Get/
+  20-goroutine concurrent Get/parent-ctx-cancel).
+
+### Reversibility
+
+Pure-additive. `New(ctx, cfg)` semantics unchanged. To roll back,
+consumers swap `NewBackground` → `New` and remove the `/ready`
+hook.
+
+### Related
+
+- vaik8s `docs/cycles/dc-oidc-readiness-01-layer-b.md` — cycle
+  plan.
+- Layer A: v0.8.0 (2026-05-15) — `Config.DiscoveryRetryBudget`.
+- MASTERPLAN-RESILIENCE.md Cluster B.2.
+
 ## v0.7.0 — 2026-05-07
 
 vaik8s MASTERPLAN-AUTH `DC-AUTH-07` Phase A. Adds the
