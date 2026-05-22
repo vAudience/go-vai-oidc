@@ -1,5 +1,66 @@
 # Changelog
 
+## v0.11.0 — 2026-05-22
+
+`DC-AUTH-HARDENING` — adds `Auth.VerifyIDToken(ctx, rawIDToken) (*User, error)`
+public method so consumers that obtain ID tokens via an alternate grant
+(ROPC, token exchange) can verify them with the SAME JWKS-backed trust
+guarantee the Authorization Code callback uses.
+
+### What this enables
+
+`Auth.IssueSession` (v0.10.0) lets consumers write a `vai_session`
+cookie from a token they obtained outside the redirect flow. The
+expectation was that the consumer would verify the token signature
+themselves, but the library provided no public verifier — so the deepr
+team's inline-login handler shipped with TLS-to-Keycloak as the only
+trust anchor, base64-decoding the JWT payload without signature check.
+That's acceptable as long as the network path is trusted but fragile:
+a misconfigured `KEYCLOAK_BASE_URL`, a rogue egress proxy, or a future
+split-horizon DNS would silently let an attacker mint arbitrary claims.
+
+`VerifyIDToken` exposes the existing `*gooidc.IDTokenVerifier` (the
+same one `handleCallback` uses) and the existing `extractUser` claim
+mapper — kept in lockstep with the redirect path so inline-login is
+cryptographically equivalent.
+
+### Behavior
+
+- JWKS signature check (RS256/ES256 per realm config) against the
+  provider's published keys.
+- `iss` must match the discovered issuer (or `Config.IssuerURLOverride`
+  when set).
+- `aud` must contain `Config.ClientID`.
+- `exp` enforced.
+- Maps the verified `*gooidc.IDToken` → `*User` via the same
+  `extractUser` helper used by the callback handler (Sub/Email/Name/
+  Claims per Config.ExtraClaims).
+- Any verification failure → error wrapping `ErrTokenVerification`
+  (existing sentinel, reused for back-compat with consumers that
+  already discriminate via `errors.Is`).
+- Empty token → error wrapping `ErrTokenVerification` (no JWKS round
+  trip).
+
+### Tests
+
+`verify_test.go` boots an in-process httptest Keycloak (OIDC discovery
++ JWKS endpoint backed by a fresh RSA-2048 key) and asserts:
+
+- Happy path (valid signature, audience, issuer, expiry) → User mapped.
+- Empty token → `ErrTokenVerification`.
+- Tampered signature → `ErrTokenVerification`.
+- Expired token → `ErrTokenVerification`.
+- Wrong audience → `ErrTokenVerification`.
+- Wrong issuer → `ErrTokenVerification`.
+- Malformed token → `ErrTokenVerification`.
+
+### Compat
+
+Strict additive — no exported symbol changed signature, no behavior
+of the existing redirect or `IssueSession` paths changed.
+
+---
+
 ## v0.10.0 — 2026-05-22
 
 `DC-VAIO-INLINE-LOGIN` — adds `Auth.IssueSession(w, r, *User, rawIDToken)`

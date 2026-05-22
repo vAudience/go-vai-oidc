@@ -146,6 +146,39 @@ func (a *Auth) UpdateSession(w http.ResponseWriter, r *http.Request, mutate func
 	return setSessionCookie(w, payload, a.sessionKey, a.cfg.CookieName, a.cfg.CookiePath, a.cfg.secureCookie())
 }
 
+// VerifyIDToken cryptographically verifies a raw Keycloak ID-token JWT
+// against the OIDC provider's published JWKS and returns the extracted
+// User. v0.11.0+.
+//
+// Intended for consumers that obtain an ID token via an alternate
+// Keycloak grant (most commonly Resource Owner Password Credentials —
+// ROPC — backing an inline-login form) and need the SAME trust guarantee
+// the Authorization Code flow provides: the token was signed by Keycloak
+// (RS256/ES256 via JWKS), the issuer matches the configured realm, the
+// audience matches the configured ClientID, and the token has not
+// expired. Reuses the same `*gooidc.IDTokenVerifier` that `handleCallback`
+// uses — kept in lockstep with the standard flow.
+//
+// On success returns a *User identical in shape to the one produced by
+// the callback path (Sub/Email/Name/Claims populated from id_token
+// claims per Config.ExtraClaims).
+//
+// On any verification failure (bad signature, wrong audience, expired,
+// malformed) returns an error wrapping ErrTokenVerification. Callers
+// can detect via errors.Is(err, ErrTokenVerification).
+//
+// Never panics. No goroutines.
+func (a *Auth) VerifyIDToken(ctx context.Context, rawIDToken string) (*User, error) {
+	if rawIDToken == "" {
+		return nil, fmt.Errorf("verify id_token: empty token: %w", ErrTokenVerification)
+	}
+	idToken, err := a.provider.verifier.Verify(ctx, rawIDToken)
+	if err != nil {
+		return nil, fmt.Errorf("verify id_token: %w", errors.Join(ErrTokenVerification, err))
+	}
+	return a.provider.extractUser(idToken, a.logger, a.cfg.ExtraClaims), nil
+}
+
 // IssueSession writes a vai-oidc session cookie for the given user WITHOUT
 // going through the Authorization Code redirect flow. v0.10.0+.
 //
