@@ -1,5 +1,68 @@
 # Changelog
 
+## v0.10.0 — 2026-05-22
+
+`DC-VAIO-INLINE-LOGIN` — adds `Auth.IssueSession(w, r, *User, rawIDToken)`
+public method so consumers can write a `vai_session` cookie WITHOUT
+going through the Authorization Code redirect flow.
+
+### What this enables
+
+The deepr team wanted a branded SPA `/login` surface with an inline
+email+password form (instead of the "Continue with Keycloak" → hosted
+Keycloak page redirect). The clean architecture is **backend-proxied
+ROPC**: the SPA POSTs credentials to a backend endpoint; the backend
+exchanges them at Keycloak's token endpoint with `grant_type=password`;
+the backend then needs to set the same encrypted `vai_session` cookie
+that `handleCallback` sets after a normal redirect.
+
+Pre-v0.10.0 the encryption layer was internal — the only public path
+was `TestSessionCookie` in `testing.go` (test-only). Consumers would
+have had to either:
+  - couple to a test helper in production code, or
+  - re-implement the AES-256-GCM encoding, or
+  - skip vai_session entirely and break downstream middleware.
+
+`IssueSession` exposes the same code path `handleCallback` uses, so
+the resulting cookie is byte-identical and indistinguishable from one
+issued by the standard flow.
+
+### Behavior
+
+- `a.IssueSession(w, r, user, rawIDToken)` constructs a `sessionPayload`
+  from `*User` + raw JWT, encrypts via the same internal helper as the
+  callback path, sets the cookie with `cfg.CookieName` / `CookiePath` /
+  `secureCookie()` / `cfg.SessionTTL`.
+- `nil` user returns `ErrSessionInvalid` without touching the response.
+- Empty `rawIDToken` is allowed — federated logout will fall back to a
+  plain cookie clear without `id_token_hint` (consumer choice).
+- All downstream middleware (`RequireSession`, `OptionalSession`,
+  `UserFromContext`) sees the resulting session exactly as if the user
+  came through the standard flow.
+
+### Caller responsibilities
+
+The library does NOT do the credential exchange itself — that's the
+consumer's job. Concretely:
+  1. POST to `<issuer>/protocol/openid-connect/token` with
+     `grant_type=password&client_id=...&client_secret=...&username=...&password=...`.
+  2. Validate the resulting `id_token` (signature, audience, expiry).
+  3. Map claims to a `*User`.
+  4. Call `Auth.IssueSession(w, r, user, idToken)`.
+
+ROPC is OAuth's least-loved grant for good reasons (no MFA, no social
+IdPs, the SPA's backend handles plaintext passwords). Consumers SHOULD
+also implement: rate-limit per email/IP, audit-log every attempt, fall
+back to the redirect flow for IdPs that don't support ROPC.
+
+### Tests
+
+- `TestIssueSession_WritesCookieMatchingHandleCallbackShape` — golden-
+  shape compare against the payload layout `handleCallback` emits.
+- `TestIssueSession_NilUserReturnsErr` — nil-user guard.
+- `TestIssueSession_EmptyIDTokenAllowed` — empty `rawIDToken` accepted.
+- Existing 50+ tests unaffected; `go test -race ./...` green.
+
 ## v0.9.0 — 2026-05-15
 
 vaik8s MASTERPLAN-RESILIENCE `DC-OIDC-READINESS-01` Layer B. Adds a

@@ -146,6 +146,48 @@ func (a *Auth) UpdateSession(w http.ResponseWriter, r *http.Request, mutate func
 	return setSessionCookie(w, payload, a.sessionKey, a.cfg.CookieName, a.cfg.CookiePath, a.cfg.secureCookie())
 }
 
+// IssueSession writes a vai-oidc session cookie for the given user WITHOUT
+// going through the Authorization Code redirect flow. v0.10.0+.
+//
+// Intended for consumers that obtain the user's identity through an
+// alternate Keycloak grant (most commonly Resource Owner Password
+// Credentials — ROPC — for an inline credential form on the consumer's
+// own /login surface). The caller is responsible for:
+//
+//   - Performing the credential exchange against Keycloak (e.g. POST to
+//     `<issuer>/protocol/openid-connect/token` with `grant_type=password`).
+//   - Validating the resulting ID token (signature, audience, expiry).
+//   - Mapping the token claims to a `*User`.
+//
+// On success this cookie is INDISTINGUISHABLE from one issued by
+// `handleCallback` — same payload shape, same encryption key, same TTL
+// (cfg.SessionTTL), same cookie attributes. Downstream middleware
+// (`RequireSession`, `OptionalSession`) treats the resulting session
+// exactly as if the user had come through the standard flow.
+//
+// `rawIDToken` is stored in the encrypted payload so RP-Initiated Logout
+// can hand it back to Keycloak as `id_token_hint`. Pass the empty string
+// if the consumer doesn't have the raw JWT (logout falls back to the
+// standard cookie clear without the federated step).
+//
+// Mirrors the encryption + cookie-writing path used at the end of
+// `handleCallback` — kept in lockstep with that code path.
+func (a *Auth) IssueSession(w http.ResponseWriter, r *http.Request, user *User, rawIDToken string) error {
+	if user == nil {
+		return ErrSessionInvalid
+	}
+	payload := &sessionPayload{
+		Sub:     user.Sub,
+		Email:   user.Email,
+		Name:    user.Name,
+		OrgID:   user.OrgID,
+		Claims:  user.Claims,
+		IDToken: rawIDToken,
+		Exp:     time.Now().UTC().Add(a.cfg.SessionTTL).Unix(),
+	}
+	return setSessionCookie(w, payload, a.sessionKey, a.cfg.CookieName, a.cfg.CookiePath, a.cfg.secureCookie())
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------

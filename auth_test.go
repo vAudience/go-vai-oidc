@@ -609,6 +609,87 @@ func TestUpdateSession_NoSession(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// IssueSession tests (v0.10.0+)
+// ---------------------------------------------------------------------------
+
+func TestIssueSession_WritesCookieMatchingHandleCallbackShape(t *testing.T) {
+	key := testKey(t)
+	a := &Auth{
+		sessionKey: key,
+		cfg: Config{
+			CookieName:     "vai_test",
+			CookiePath:     "/",
+			InsecureCookie: true,
+			SessionTTL:     2 * time.Hour,
+		},
+	}
+
+	user := &User{
+		Sub:    "user-7",
+		Email:  "x@y.com",
+		Name:   "X Y",
+		OrgID:  "org-z",
+		Claims: map[string]string{"dept": "eng"},
+	}
+	req := httptest.NewRequest("POST", "/auth/login/password", nil)
+	w := httptest.NewRecorder()
+
+	err := a.IssueSession(w, req, user, "raw-id-token-xyz")
+	require.NoError(t, err)
+
+	cookies := w.Result().Cookies()
+	require.Len(t, cookies, 1)
+	assert.Equal(t, "vai_test", cookies[0].Name)
+	assert.True(t, cookies[0].HttpOnly)
+	assert.Equal(t, "/", cookies[0].Path)
+
+	// Decrypt + verify payload is the same shape handleCallback would emit.
+	payload, err := decryptSession(cookies[0].Value, key)
+	require.NoError(t, err)
+	assert.Equal(t, "user-7", payload.Sub)
+	assert.Equal(t, "x@y.com", payload.Email)
+	assert.Equal(t, "X Y", payload.Name)
+	assert.Equal(t, "org-z", payload.OrgID)
+	assert.Equal(t, "eng", payload.Claims["dept"])
+	assert.Equal(t, "raw-id-token-xyz", payload.IDToken)
+	// Exp should be ~now + SessionTTL (within 5s slack).
+	assert.InDelta(t, time.Now().Add(2*time.Hour).Unix(), payload.Exp, 5)
+}
+
+func TestIssueSession_NilUserReturnsErr(t *testing.T) {
+	key := testKey(t)
+	a := &Auth{
+		sessionKey: key,
+		cfg:        Config{CookieName: "vai_test", InsecureCookie: true, SessionTTL: time.Hour},
+	}
+	req := httptest.NewRequest("POST", "/auth/login/password", nil)
+	w := httptest.NewRecorder()
+
+	err := a.IssueSession(w, req, nil, "")
+	assert.ErrorIs(t, err, ErrSessionInvalid)
+	assert.Empty(t, w.Result().Cookies())
+}
+
+func TestIssueSession_EmptyIDTokenAllowed(t *testing.T) {
+	key := testKey(t)
+	a := &Auth{
+		sessionKey: key,
+		cfg:        Config{CookieName: "vai_test", InsecureCookie: true, SessionTTL: time.Hour},
+	}
+	user := &User{Sub: "user-2", Email: "a@b.com"}
+	req := httptest.NewRequest("POST", "/auth/login/password", nil)
+	w := httptest.NewRecorder()
+
+	err := a.IssueSession(w, req, user, "")
+	require.NoError(t, err)
+	cookies := w.Result().Cookies()
+	require.Len(t, cookies, 1)
+	payload, err := decryptSession(cookies[0].Value, key)
+	require.NoError(t, err)
+	assert.Equal(t, "", payload.IDToken)
+}
+
+// ---------------------------------------------------------------------------
 // UserFromContext
 // ---------------------------------------------------------------------------
 
