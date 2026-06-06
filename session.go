@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 )
@@ -22,8 +23,17 @@ type sessionPayload struct {
 	Name    string            `json:"name"`
 	OrgID   string            `json:"oid,omitempty"` // organization ID (resolved by UserResolver)
 	Claims  map[string]string `json:"clm,omitempty"` // extra claims from ExtraClaims config
-	IDToken string            `json:"idt"`            // raw ID token for Keycloak logout hint
-	Exp     int64             `json:"exp"`            // unix timestamp
+	IDToken string            `json:"idt"`           // raw ID token for Keycloak logout hint
+	Exp     int64             `json:"exp"`           // unix timestamp
+
+	// Token retention (DC-APIKEY-03, v0.12.0). Populated only when
+	// Config.RetainTokens is true; empty otherwise. AccessToken is the raw
+	// Keycloak access token forwardable to downstream APIs; RefreshToken
+	// renews it; AccessTokenExp is the access token's own expiry (unix), which
+	// is independent of and shorter than the session Exp above.
+	AccessToken    string `json:"at,omitempty"`
+	RefreshToken   string `json:"rt,omitempty"`
+	AccessTokenExp int64  `json:"ate,omitempty"`
 }
 
 // toUser converts the payload to a public User.
@@ -116,10 +126,20 @@ func decryptSession(encoded string, key []byte) (*sessionPayload, error) {
 }
 
 // setSessionCookie encrypts the payload and writes the session cookie.
-func setSessionCookie(w http.ResponseWriter, payload *sessionPayload, key []byte, cookieName, cookiePath string, secure bool) error {
+// logger may be nil; when non-nil it emits a warning if the encoded cookie
+// crosses CookieSizeWarnThreshold (relevant once Config.RetainTokens stores
+// access+refresh tokens — browsers cap a single cookie at ~4KB).
+func setSessionCookie(w http.ResponseWriter, payload *sessionPayload, key []byte, cookieName, cookiePath string, secure bool, logger *slog.Logger) error {
 	encrypted, err := encryptSession(payload, key)
 	if err != nil {
 		return err
+	}
+
+	if logger != nil && len(encrypted) > CookieSizeWarnThreshold {
+		logger.Warn(logMsgCookieLarge,
+			slog.String(logKeyComponent, logComponent),
+			slog.Int(logKeyCookieBytes, len(encrypted)),
+		)
 	}
 
 	http.SetCookie(w, &http.Cookie{

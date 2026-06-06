@@ -41,6 +41,28 @@ type Config struct {
 	ExtraClaims  []string     // Extra ID token claim names to extract into User.Claims
 	UserResolver UserResolver // Called during OIDC callback to enrich user (resolve org, etc.)
 
+	// Optional: Token retention (DC-APIKEY-03, v0.12.0).
+	//
+	// When true, the OIDC callback also stores the user's Keycloak
+	// access_token + refresh_token + access-token expiry in the encrypted
+	// session, enabling Auth.AccessToken(w, r) to return a currently-valid
+	// access token (refreshing transparently via the refresh token) that the
+	// service can forward as `Authorization: Bearer` to a downstream API that
+	// validates Keycloak access tokens directly (e.g. charon /api/v1/keys for
+	// self-service API-key minting).
+	//
+	// Default false — the pre-v0.12.0 behaviour, where only the id_token is
+	// retained (for logout) and the access/refresh tokens are discarded.
+	//
+	// TRADE-OFF: retaining both tokens adds ~2–4 KB (encrypted+base64) to the
+	// session cookie on top of the id_token. Combined with a large id_token
+	// this can approach the ~4 KB per-cookie browser limit; New() logs a
+	// warning when a written session cookie crosses CookieSizeWarnThreshold.
+	// For long-lived refresh that survives Keycloak SSO logout, add
+	// "offline_access" to Scopes; otherwise the refresh token is valid only
+	// while the Keycloak SSO session lives.
+	RetainTokens bool
+
 	// Optional: Email domain gate.
 	//
 	// When set, the OIDC callback rejects logins whose `email` claim's

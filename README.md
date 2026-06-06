@@ -190,6 +190,33 @@ func handleSelectOrg(auth *vaioidc.Auth) http.HandlerFunc {
 
 `UpdateSession` reads the current session, applies the mutation, and writes a new cookie. The IDToken and expiration are preserved — only User-visible fields change.
 
+## AccessToken — Forward the User's Keycloak Token (v0.12.0+)
+
+By default vai-oidc keeps **only** the `id_token` (for logout) and discards the OAuth2 access/refresh tokens. Set `Config.RetainTokens = true` to also store them in the encrypted session, then call `AccessToken(w, r)` to obtain a **currently-valid** access token — refreshed transparently via the refresh token when expired:
+
+```go
+// At startup:
+vaioidc.Config{
+    // ...
+    RetainTokens: true, // store access+refresh tokens in the session
+}
+
+// In a handler that must act on the user's behalf against a downstream API
+// (e.g. mint a Charon API key for the logged-in user):
+token, err := auth.AccessToken(w, r)
+if err != nil {
+    // ErrTokensNotRetained → retention off or pre-retention session
+    // ErrTokenRefreshFailed → re-authentication required
+    http.Error(w, "re-authentication required", http.StatusUnauthorized)
+    return
+}
+req.Header.Set("Authorization", "Bearer "+token) // forward to charon, etc.
+```
+
+The returned token is the raw Keycloak access-token JWT. The downstream service validates it directly (signature + `aud`); ensure the Keycloak client emits an `aud` the downstream accepts (an audience-mapper concern — vai-oidc forwards the token opaquely). When a refresh occurs the rotated tokens are persisted back into the cookie automatically (the session TTL is preserved).
+
+**Cookie-size trade-off:** retaining both tokens adds ~2–4 KB to the session cookie on top of the id_token, which can approach the ~4 KB per-cookie browser limit. A warning is logged when a written cookie crosses `CookieSizeWarnThreshold`. For refresh that survives Keycloak SSO logout, add `"offline_access"` to `Scopes`.
+
 ## ExtraClaims — Custom ID Token Claims
 
 If your Keycloak realm has custom claim mappers, extract them into `User.Claims`:

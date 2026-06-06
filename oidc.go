@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
@@ -91,26 +92,45 @@ func (p *oidcProvider) authCodeURL(state, challenge string, extra map[string]str
 }
 
 // exchange trades the authorization code and PKCE verifier for tokens.
-// Returns both the raw ID token string (needed for logout hint) and the verified IDToken.
-func (p *oidcProvider) exchange(ctx context.Context, code, codeVerifier string) (string, *gooidc.IDToken, error) {
+// Returns the full OAuth2 token (access+refresh+expiry, retained only when
+// Config.RetainTokens is set — DC-APIKEY-03), the raw ID token string (needed
+// for logout hint), and the verified IDToken.
+func (p *oidcProvider) exchange(ctx context.Context, code, codeVerifier string) (*oauth2.Token, string, *gooidc.IDToken, error) {
 	token, err := p.oauth2Cfg.Exchange(ctx, code,
 		oauth2.SetAuthURLParam("code_verifier", codeVerifier),
 	)
 	if err != nil {
-		return "", nil, fmt.Errorf("exchange code: %w", errors.Join(ErrTokenExchange, err))
+		return nil, "", nil, fmt.Errorf("exchange code: %w", errors.Join(ErrTokenExchange, err))
 	}
 
 	rawIDToken, ok := token.Extra(extraIDToken).(string)
 	if !ok || rawIDToken == "" {
-		return "", nil, fmt.Errorf("missing id_token in token response: %w", ErrTokenExchange)
+		return nil, "", nil, fmt.Errorf("missing id_token in token response: %w", ErrTokenExchange)
 	}
 
 	idToken, err := p.verifier.Verify(ctx, rawIDToken)
 	if err != nil {
-		return "", nil, fmt.Errorf("verify id_token: %w", errors.Join(ErrTokenVerification, err))
+		return nil, "", nil, fmt.Errorf("verify id_token: %w", errors.Join(ErrTokenVerification, err))
 	}
 
-	return rawIDToken, idToken, nil
+	return token, rawIDToken, idToken, nil
+}
+
+// refreshedToken returns a currently-valid OAuth2 token derived from the
+// stored access/refresh tokens, transparently refreshing against Keycloak when
+// the access token has expired. A non-expired token is returned as-is with no
+// network call (oauth2.TokenSource semantics). DC-APIKEY-03 (v0.12.0).
+func (p *oidcProvider) refreshedToken(ctx context.Context, accessToken, refreshToken string, accessExp int64) (*oauth2.Token, error) {
+	stored := &oauth2.Token{
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+		Expiry:       time.Unix(accessExp, 0),
+	}
+	fresh, err := p.oauth2Cfg.TokenSource(ctx, stored).Token()
+	if err != nil {
+		return nil, fmt.Errorf("refresh access token: %w", errors.Join(ErrTokenRefreshFailed, err))
+	}
+	return fresh, nil
 }
 
 // extractUser reads identity claims from a verified ID token.

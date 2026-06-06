@@ -40,6 +40,21 @@ var (
 	ErrTokenVerification = errors.New("vai-oidc: ID token verification failed")
 )
 
+// Token-retention errors (DC-APIKEY-03, v0.12.0) — returned by Auth.AccessToken().
+var (
+	// ErrTokensNotRetained indicates Auth.AccessToken was called but the
+	// access/refresh tokens are not available: either Config.RetainTokens is
+	// false, or the session predates retention being enabled (e.g. an
+	// IssueSession cookie). Re-login to obtain a token-bearing session.
+	ErrTokensNotRetained = errors.New("vai-oidc: access token not retained in session")
+
+	// ErrTokenRefreshFailed indicates a stored access token had expired and
+	// the refresh attempt against Keycloak failed (refresh token expired,
+	// SSO session ended, or Keycloak unreachable). The caller should treat
+	// this as "re-authentication required".
+	ErrTokenRefreshFailed = errors.New("vai-oidc: access token refresh failed")
+)
+
 // Identity-gate errors — returned by the Config.RequireEmailDomain gate.
 var (
 	// ErrEmailDomainMismatch indicates the verified id_token's email

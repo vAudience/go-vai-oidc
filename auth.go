@@ -143,7 +143,7 @@ func (a *Auth) UpdateSession(w http.ResponseWriter, r *http.Request, mutate func
 	user := payload.toUser()
 	mutate(user)
 	payload.fromUser(user)
-	return setSessionCookie(w, payload, a.sessionKey, a.cfg.CookieName, a.cfg.CookiePath, a.cfg.secureCookie())
+	return setSessionCookie(w, payload, a.sessionKey, a.cfg.CookieName, a.cfg.CookiePath, a.cfg.secureCookie(), a.logger)
 }
 
 // VerifyIDToken cryptographically verifies a raw Keycloak ID-token JWT
@@ -218,7 +218,72 @@ func (a *Auth) IssueSession(w http.ResponseWriter, r *http.Request, user *User, 
 		IDToken: rawIDToken,
 		Exp:     time.Now().UTC().Add(a.cfg.SessionTTL).Unix(),
 	}
-	return setSessionCookie(w, payload, a.sessionKey, a.cfg.CookieName, a.cfg.CookiePath, a.cfg.secureCookie())
+	return setSessionCookie(w, payload, a.sessionKey, a.cfg.CookieName, a.cfg.CookiePath, a.cfg.secureCookie(), a.logger)
+}
+
+// AccessToken returns a currently-valid Keycloak access token for the
+// logged-in user, refreshing it transparently via the stored refresh token
+// when it has expired. v0.12.0+ (DC-APIKEY-03).
+//
+// Requires Config.RetainTokens=true AND a session created after retention was
+// enabled; otherwise returns ErrTokensNotRetained. The returned token is the
+// raw Keycloak access-token JWT, intended to be forwarded as
+// `Authorization: Bearer <token>` to a downstream API that validates Keycloak
+// access tokens directly (e.g. charon /api/v1/keys for self-service API-key
+// minting). Note the downstream's audience requirement: the access token must
+// carry an `aud` the downstream accepts (a Keycloak audience-mapper concern,
+// not handled here — vai-oidc forwards the token opaquely).
+//
+// When a refresh occurs, the rotated access+refresh tokens are persisted back
+// into the session cookie (hence the ResponseWriter); the session's own TTL
+// (Exp) is preserved. A persist failure is non-fatal — the freshly-obtained
+// valid token is still returned, with a logged warning.
+//
+// Errors: ErrNoSession / ErrSessionExpired / ErrSessionInvalid (no usable
+// session), ErrTokensNotRetained (retention off or pre-retention session),
+// ErrTokenRefreshFailed (access token expired and refresh failed → treat as
+// re-authentication required). Never panics. No goroutines.
+func (a *Auth) AccessToken(w http.ResponseWriter, r *http.Request) (string, error) {
+	if !a.cfg.RetainTokens {
+		return "", ErrTokensNotRetained
+	}
+	payload, err := readSessionCookie(r, a.sessionKey, a.cfg.CookieName)
+	if err != nil {
+		return "", err
+	}
+	if payload.AccessToken == "" {
+		// Session predates retention (e.g. an IssueSession cookie) or tokens
+		// were never stored — the caller must re-login to obtain them.
+		return "", ErrTokensNotRetained
+	}
+
+	fresh, err := a.provider.refreshedToken(r.Context(), payload.AccessToken, payload.RefreshToken, payload.AccessTokenExp)
+	if err != nil {
+		return "", err // already wraps ErrTokenRefreshFailed
+	}
+
+	// Persist rotated tokens if the access token changed (Keycloak rotates
+	// refresh tokens by default). Preserve the session Exp.
+	if fresh.AccessToken != payload.AccessToken {
+		payload.AccessToken = fresh.AccessToken
+		payload.AccessTokenExp = fresh.Expiry.Unix()
+		if fresh.RefreshToken != "" {
+			payload.RefreshToken = fresh.RefreshToken
+		}
+		if writeErr := setSessionCookie(w, payload, a.sessionKey, a.cfg.CookieName, a.cfg.CookiePath, a.cfg.secureCookie(), a.logger); writeErr != nil {
+			a.logger.Warn(logMsgTokenPersistFail,
+				slog.String(logKeyComponent, logComponent),
+				slog.String(logKeyError, writeErr.Error()),
+			)
+		} else {
+			a.logger.Debug(logMsgTokenRefreshed,
+				slog.String(logKeyComponent, logComponent),
+				slog.String(logKeySub, payload.Sub),
+			)
+		}
+	}
+
+	return fresh.AccessToken, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -359,7 +424,7 @@ func (a *Auth) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Exchange code for tokens.
-	rawIDToken, idToken, err := a.provider.exchange(r.Context(), code, pkceCookie.Value)
+	token, rawIDToken, idToken, err := a.provider.exchange(r.Context(), code, pkceCookie.Value)
 	if err != nil {
 		a.logger.Warn("OIDC callback: token exchange failed",
 			slog.String(logKeyComponent, logComponent),
@@ -435,7 +500,15 @@ func (a *Auth) handleCallback(w http.ResponseWriter, r *http.Request) {
 		Exp:     time.Now().UTC().Add(a.cfg.SessionTTL).Unix(),
 	}
 
-	if err := setSessionCookie(w, payload, a.sessionKey, a.cfg.CookieName, a.cfg.CookiePath, a.cfg.secureCookie()); err != nil {
+	// DC-APIKEY-03: optionally retain the access+refresh tokens so the service
+	// can later forward a valid Keycloak access token to a downstream API.
+	if a.cfg.RetainTokens && token != nil {
+		payload.AccessToken = token.AccessToken
+		payload.RefreshToken = token.RefreshToken
+		payload.AccessTokenExp = token.Expiry.Unix()
+	}
+
+	if err := setSessionCookie(w, payload, a.sessionKey, a.cfg.CookieName, a.cfg.CookiePath, a.cfg.secureCookie(), a.logger); err != nil {
 		a.logger.Error("OIDC callback: failed to set session cookie",
 			slog.String(logKeyComponent, logComponent),
 			slog.String(logKeyError, err.Error()),

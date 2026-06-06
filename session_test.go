@@ -196,7 +196,7 @@ func TestSetAndReadSessionCookie(t *testing.T) {
 	}
 
 	w := httptest.NewRecorder()
-	err := setSessionCookie(w, payload, key, "vai_test", "/", false)
+	err := setSessionCookie(w, payload, key, "vai_test", "/", false, nil)
 	require.NoError(t, err)
 
 	// Extract cookie from response and put it on a new request.

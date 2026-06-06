@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.12.0 — 2026-06-06
+
+`DC-APIKEY-03` — optional Keycloak access-token retention + transparent
+refresh, so a service can forward the logged-in user's live access token to a
+downstream API (the platform driver: self-service Charon API-key minting for
+Keycloak-logged-in users — see vaik8s `MASTERPLAN-APIKEYS.md`).
+
+### Added
+
+- `Config.RetainTokens bool` (default `false`). When true, the OIDC callback
+  also stores the user's `access_token` + `refresh_token` + access-token expiry
+  in the encrypted session (previously only the `id_token` was kept, for logout).
+- `Auth.AccessToken(w, r) (string, error)` — returns a currently-valid Keycloak
+  access token for the logged-in user, refreshing transparently via the stored
+  refresh token when expired and persisting the rotated tokens back into the
+  session cookie (session TTL preserved). Errors: `ErrTokensNotRetained`,
+  `ErrTokenRefreshFailed`, plus the usual session errors.
+- `CookieSizeWarnThreshold` (exported) + a warning logged by `setSessionCookie`
+  when a written cookie is large — retaining both tokens can approach the ~4 KB
+  per-cookie browser limit.
+
+### Notes
+
+- Default behaviour is unchanged when `RetainTokens` is false (the access/refresh
+  tokens are still discarded; the id_token-only session is byte-identical).
+- The access token is forwarded opaquely; the downstream's `aud` requirement is a
+  Keycloak audience-mapper concern, not handled here. For refresh surviving
+  Keycloak SSO logout, add `"offline_access"` to `Scopes`.
+
 ## v0.11.0 — 2026-05-22
 
 `DC-AUTH-HARDENING` — adds `Auth.VerifyIDToken(ctx, rawIDToken) (*User, error)`

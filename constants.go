@@ -4,8 +4,8 @@ import "time"
 
 // Cookie names.
 const (
-	defaultCookieName = "vai_session"
-	cookieOIDCState   = "vai_oidc_state"
+	defaultCookieName  = "vai_session"
+	cookieOIDCState    = "vai_oidc_state"
 	cookiePKCEVerifier = "vai_pkce_verifier"
 )
 
@@ -48,15 +48,22 @@ const (
 
 // PKCE parameters.
 const (
-	pkceVerifierBytes  = 32
+	pkceVerifierBytes   = 32
 	pkceChallengeMethod = "S256"
 )
 
 // Crypto.
 const (
-	aesKeyLength  = 32 // AES-256
-	stateBytes    = 32
+	aesKeyLength = 32 // AES-256
+	stateBytes   = 32
 )
+
+// CookieSizeWarnThreshold is the encoded session-cookie size (bytes) above
+// which setSessionCookie logs a warning. Browsers cap a single cookie at
+// ~4096 bytes; retaining Keycloak access+refresh tokens (Config.RetainTokens)
+// can approach that. The threshold leaves headroom for the cookie name +
+// attributes. DC-APIKEY-03 (v0.12.0).
+const CookieSizeWarnThreshold = 3500
 
 // Keycloak issuer URL template: BaseURL + "/realms/" + Realm.
 const keycloakIssuerTemplate = "%s/realms/%s"
@@ -87,6 +94,14 @@ const (
 	logKeyPath           = "path"
 	logKeyEmailDomain    = "email_domain"
 	logKeyRequiredDomain = "required_domain"
+	logKeyCookieBytes    = "cookie_bytes"
+)
+
+// Token-retention log messages (DC-APIKEY-03, v0.12.0).
+const (
+	logMsgCookieLarge      = "vai-oidc: session cookie is large; browsers cap a single cookie at ~4KB"
+	logMsgTokenRefreshed   = "vai-oidc: refreshed Keycloak access token"
+	logMsgTokenPersistFail = "vai-oidc: failed to persist refreshed tokens (returning valid token anyway)"
 )
 
 // Discovery retry (DC-OIDC-RETRY-01, v0.8.0).
@@ -121,9 +136,9 @@ const (
 
 // Email-domain gate.
 const (
-	emailAtSeparator                  = "@"
-	requireEmailDomainForbiddenRunes  = "@ \t\r\n"
-	logMsgEmailDomainRejected         = "OIDC callback: email domain rejected"
-	logReasonEmailDomainMismatch      = "email_domain_mismatch"
-	logReasonEmailDomainMissingClaim  = "email_claim_missing_or_malformed"
+	emailAtSeparator                 = "@"
+	requireEmailDomainForbiddenRunes = "@ \t\r\n"
+	logMsgEmailDomainRejected        = "OIDC callback: email domain rejected"
+	logReasonEmailDomainMismatch     = "email_domain_mismatch"
+	logReasonEmailDomainMissingClaim = "email_claim_missing_or_malformed"
 )
