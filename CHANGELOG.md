@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.13.0 — 2026-06-06
+
+`DC-APIKEY-followup` — **session-cookie chunking**, fixing a login-loop
+regression introduced by v0.12.0's `RetainTokens`.
+
+### Fixed
+
+- When `Config.RetainTokens` is true, the encrypted session (id_token +
+  access_token + refresh_token) can exceed the browser's ~4 KB single-cookie
+  limit. Browsers **silently drop** an oversized `Set-Cookie`, so the user
+  landed back at the login page after a successful Keycloak round-trip with no
+  session — an endless login redirect. The session is now transparently split
+  across the base cookie plus `<name>_1..N` and reassembled on read.
+
+### Behavior
+
+- **Single-cookie fast path is byte-identical to v0.12** for any session that
+  fits in one cookie (every `RetainTokens=false` consumer is unaffected). The
+  base cookie holds the encrypted payload directly; only when it would exceed
+  `maxCookieValueBytes` does the base cookie become a `chunked:N` header with
+  the payload in `<name>_1..N`. base64url never contains `:`, so the sentinel
+  cannot collide with a real payload — pre-v0.13 sessions still decode.
+- Reassembly is **fail-closed**: a missing, oversized, or torn chunk → a clean
+  `ErrSessionInvalid` (re-login), never a partial decrypt. AES-256-GCM still
+  authenticates the whole payload, so chunk tampering/forgery is rejected.
+- Chunk count is capped at `maxSessionCookieChunks` (8 ≈ 28 KB); an even larger
+  session is refused on write rather than issued un-readable.
+- `clearSessionCookie` (logout) now evicts all chunk slots so a prior chunked
+  session leaves nothing behind.
+- The `CookieSizeWarnThreshold` warning now signals "session was chunked"
+  (logs the chunk count) rather than "approaching the single-cookie limit".
+
 ## v0.12.0 — 2026-06-06
 
 `DC-APIKEY-03` — optional Keycloak access-token retention + transparent

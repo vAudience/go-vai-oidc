@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -125,50 +127,115 @@ func decryptSession(encoded string, key []byte) (*sessionPayload, error) {
 	return &payload, nil
 }
 
-// setSessionCookie encrypts the payload and writes the session cookie.
-// logger may be nil; when non-nil it emits a warning if the encoded cookie
-// crosses CookieSizeWarnThreshold (relevant once Config.RetainTokens stores
-// access+refresh tokens — browsers cap a single cookie at ~4KB).
+// setSessionCookie encrypts the payload and writes the session cookie(s).
+//
+// When the encrypted payload fits in a single cookie (≤ maxCookieValueBytes —
+// the common case, byte-identical to pre-v0.13 behaviour) it writes one cookie.
+// When it does not — which Config.RetainTokens can cause by storing the Keycloak
+// access+refresh tokens — the payload is split across the base cookie plus
+// cookieName_1..N, with the base cookie holding a "chunked:N" header so the
+// reader reassembles exactly N chunks (and ignores stale higher-index remnants
+// from a previously larger session). Without chunking, an oversized cookie is
+// silently dropped by the browser, leaving the user in an endless login loop.
+//
+// logger may be nil; when non-nil it warns once when a session is chunked.
 func setSessionCookie(w http.ResponseWriter, payload *sessionPayload, key []byte, cookieName, cookiePath string, secure bool, logger *slog.Logger) error {
 	encrypted, err := encryptSession(payload, key)
 	if err != nil {
 		return err
 	}
 
-	if logger != nil && len(encrypted) > CookieSizeWarnThreshold {
+	// Single-cookie fast path: the base cookie carries the payload directly.
+	if len(encrypted) <= maxCookieValueBytes {
+		writeSessionCookie(w, cookieName, encrypted, cookiePath, payload.Exp, secure)
+		return nil
+	}
+
+	// Chunked path. The base cookie becomes a "chunked:N" header; the payload
+	// lives in cookieName_1..N.
+	chunks := chunkString(encrypted, maxCookieValueBytes)
+	n := len(chunks)
+	if n > maxSessionCookieChunks {
+		return fmt.Errorf("session payload of %d bytes needs %d chunks, exceeds max %d: %w",
+			len(encrypted), n, maxSessionCookieChunks, ErrSessionInvalid)
+	}
+	if logger != nil {
 		logger.Warn(logMsgCookieLarge,
 			slog.String(logKeyComponent, logComponent),
 			slog.Int(logKeyCookieBytes, len(encrypted)),
+			slog.Int(logKeyCookieChunks, n),
 		)
 	}
+	writeSessionCookie(w, cookieName, chunkCountPrefix+strconv.Itoa(n), cookiePath, payload.Exp, secure)
+	for i, c := range chunks {
+		writeSessionCookie(w, chunkCookieName(cookieName, i+1), c, cookiePath, payload.Exp, secure)
+	}
+	return nil
+}
 
+// readSessionCookie reads, reassembles, and decrypts the session cookie(s).
+// Returns an error wrapping ErrNoSession, ErrSessionInvalid, or ErrSessionExpired.
+func readSessionCookie(r *http.Request, key []byte, cookieName string) (*sessionPayload, error) {
+	base, err := r.Cookie(cookieName)
+	if err != nil {
+		return nil, fmt.Errorf("cookie %q: %w", cookieName, ErrNoSession)
+	}
+
+	encoded := base.Value
+	// A "chunked:N" base cookie signals the payload is split across
+	// cookieName_1..N. base64url never contains ':', so this is unambiguous.
+	if rest, ok := strings.CutPrefix(encoded, chunkCountPrefix); ok {
+		n, perr := strconv.Atoi(rest)
+		if perr != nil || n < 1 || n > maxSessionCookieChunks {
+			return nil, fmt.Errorf("invalid session chunk header %q: %w", encoded, ErrSessionInvalid)
+		}
+		var b strings.Builder
+		for i := 1; i <= n; i++ {
+			c, cerr := r.Cookie(chunkCookieName(cookieName, i))
+			if cerr != nil {
+				return nil, fmt.Errorf("missing session chunk %d/%d: %w", i, n, ErrSessionInvalid)
+			}
+			// Bound each chunk to what the write path could legitimately produce,
+			// so reassembly allocates at most maxSessionCookieChunks*maxCookieValueBytes
+			// regardless of a (non-browser) client sending oversized chunk cookies.
+			if len(c.Value) > maxCookieValueBytes {
+				return nil, fmt.Errorf("session chunk %d/%d exceeds max size: %w", i, n, ErrSessionInvalid)
+			}
+			b.WriteString(c.Value)
+		}
+		encoded = b.String()
+	}
+	return decryptSession(encoded, key)
+}
+
+// clearSessionCookie removes the session cookie and any chunk cookies.
+// The secure flag must match the original cookie's Secure attribute for browsers to clear it.
+func clearSessionCookie(w http.ResponseWriter, cookieName, cookiePath string, secure bool) {
+	expireSessionCookie(w, cookieName, cookiePath, secure)
+	// Evict any chunk cookies a prior chunked session may have written. Bounded
+	// by maxSessionCookieChunks; harmless when the names don't exist client-side.
+	for i := 1; i <= maxSessionCookieChunks; i++ {
+		expireSessionCookie(w, chunkCookieName(cookieName, i), cookiePath, secure)
+	}
+}
+
+// writeSessionCookie writes one session cookie with the standard attributes.
+func writeSessionCookie(w http.ResponseWriter, name, value, cookiePath string, exp int64, secure bool) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     cookieName,
-		Value:    encrypted,
+		Name:     name,
+		Value:    value,
 		Path:     cookiePath,
-		Expires:  time.Unix(payload.Exp, 0),
+		Expires:  time.Unix(exp, 0),
 		HttpOnly: true,
 		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 	})
-	return nil
 }
 
-// readSessionCookie reads and decrypts the session cookie from the request.
-// Returns an error wrapping ErrNoSession, ErrSessionInvalid, or ErrSessionExpired.
-func readSessionCookie(r *http.Request, key []byte, cookieName string) (*sessionPayload, error) {
-	cookie, err := r.Cookie(cookieName)
-	if err != nil {
-		return nil, fmt.Errorf("cookie %q: %w", cookieName, ErrNoSession)
-	}
-	return decryptSession(cookie.Value, key)
-}
-
-// clearSessionCookie removes the session cookie.
-// The secure flag must match the original cookie's Secure attribute for browsers to clear it.
-func clearSessionCookie(w http.ResponseWriter, cookieName, cookiePath string, secure bool) {
+// expireSessionCookie writes a deletion cookie (MaxAge=-1) for name.
+func expireSessionCookie(w http.ResponseWriter, name, cookiePath string, secure bool) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     cookieName,
+		Name:     name,
 		Value:    "",
 		Path:     cookiePath,
 		MaxAge:   -1,
@@ -176,6 +243,22 @@ func clearSessionCookie(w http.ResponseWriter, cookieName, cookiePath string, se
 		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 	})
+}
+
+// chunkCookieName returns the cookie name for a 1-based data-chunk index.
+func chunkCookieName(base string, i int) string {
+	return base + sessionChunkNameSep + strconv.Itoa(i)
+}
+
+// chunkString splits s into substrings of at most size bytes each. s is always
+// base64url (single-byte runes), so byte-slicing never splits a multibyte rune.
+func chunkString(s string, size int) []string {
+	var out []string
+	for len(s) > size {
+		out = append(out, s[:size])
+		s = s[size:]
+	}
+	return append(out, s)
 }
 
 // setOIDCCookie writes a short-lived cookie for OIDC state/verifier parameters.

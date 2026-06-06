@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -228,9 +229,102 @@ func TestClearSessionCookie(t *testing.T) {
 	w := httptest.NewRecorder()
 	clearSessionCookie(w, "vai_test", "/", false)
 
+	// The base cookie plus every possible chunk slot are evicted (v0.13.0), so a
+	// previously chunked session is fully cleared on logout.
 	cookies := w.Result().Cookies()
-	require.Len(t, cookies, 1)
-	assert.Equal(t, -1, cookies[0].MaxAge)
+	require.Len(t, cookies, 1+maxSessionCookieChunks)
+	assert.Equal(t, "vai_test", cookies[0].Name)
+	for i, c := range cookies {
+		assert.Equal(t, -1, c.MaxAge, "cookie %d (%s) should be a deletion cookie", i, c.Name)
+		assert.Empty(t, c.Value)
+	}
+	assert.Equal(t, "vai_test_1", cookies[1].Name)
+	assert.Equal(t, chunkCookieName("vai_test", maxSessionCookieChunks), cookies[maxSessionCookieChunks].Name)
+}
+
+// TestSessionCookieChunking is the v0.13.0 regression guard: a session whose
+// encrypted payload exceeds a single cookie (Config.RetainTokens storing
+// Keycloak access+refresh tokens) must be split across multiple cookies and
+// reassemble losslessly — without chunking the browser silently drops the
+// oversized cookie and the user is stuck in an endless login redirect.
+func TestSessionCookieChunking(t *testing.T) {
+	key := testKey(t)
+	// A realistic RetainTokens payload: three large JWT-shaped blobs that, once
+	// encrypted + base64url-encoded, exceed maxCookieValueBytes.
+	big := strings.Repeat("x", 3000)
+	payload := &sessionPayload{
+		Sub:          "user-123",
+		Email:        "user@example.com",
+		IDToken:      "id." + big,
+		AccessToken:  "at." + big,
+		RefreshToken: "rt." + big,
+		Exp:          time.Now().Add(time.Hour).Unix(),
+	}
+
+	w := httptest.NewRecorder()
+	require.NoError(t, setSessionCookie(w, payload, key, "vai_test", "/", false, nil))
+
+	cookies := w.Result().Cookies()
+	require.Greater(t, len(cookies), 1, "oversized session must be chunked into >1 cookie")
+	// The base cookie carries the "chunked:N" header, never the payload, and no
+	// single cookie value exceeds the per-cookie cap.
+	require.Equal(t, "vai_test", cookies[0].Name)
+	assert.True(t, strings.HasPrefix(cookies[0].Value, chunkCountPrefix),
+		"base cookie must hold the chunk header, got %q", cookies[0].Value)
+	for _, c := range cookies {
+		assert.LessOrEqual(t, len(c.Value), maxCookieValueBytes,
+			"cookie %s value %d bytes exceeds the per-cookie cap", c.Name, len(c.Value))
+	}
+
+	// Reassembly round-trips losslessly.
+	req := httptest.NewRequest("GET", "/", nil)
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	read, err := readSessionCookie(req, key, "vai_test")
+	require.NoError(t, err)
+	assert.Equal(t, payload.Sub, read.Sub)
+	assert.Equal(t, payload.AccessToken, read.AccessToken)
+	assert.Equal(t, payload.RefreshToken, read.RefreshToken)
+	assert.Equal(t, payload.IDToken, read.IDToken)
+}
+
+// TestSessionCookieChunking_MissingChunk verifies a torn chunk set fails closed
+// (treated as an invalid session → re-login), never a partial decrypt.
+func TestSessionCookieChunking_MissingChunk(t *testing.T) {
+	key := testKey(t)
+	big := strings.Repeat("y", 3000)
+	payload := &sessionPayload{
+		Sub: "user-123", IDToken: "id." + big, AccessToken: "at." + big,
+		RefreshToken: "rt." + big, Exp: time.Now().Add(time.Hour).Unix(),
+	}
+	w := httptest.NewRecorder()
+	require.NoError(t, setSessionCookie(w, payload, key, "vai_test", "/", false, nil))
+
+	// Drop the last data chunk to simulate a browser that didn't store it.
+	cookies := w.Result().Cookies()
+	req := httptest.NewRequest("GET", "/", nil)
+	for _, c := range cookies[:len(cookies)-1] {
+		req.AddCookie(c)
+	}
+	_, err := readSessionCookie(req, key, "vai_test")
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrSessionInvalid))
+}
+
+// TestSessionCookieChunking_TooLarge verifies the write path refuses (rather
+// than silently truncating) a session that needs more than maxSessionCookieChunks
+// — reachable in production with an unusually claims-rich Keycloak token set.
+func TestSessionCookieChunking_TooLarge(t *testing.T) {
+	key := testKey(t)
+	huge := strings.Repeat("z", maxSessionCookieChunks*maxCookieValueBytes+1)
+	payload := &sessionPayload{
+		Sub: "user-123", AccessToken: huge, Exp: time.Now().Add(time.Hour).Unix(),
+	}
+	w := httptest.NewRecorder()
+	err := setSessionCookie(w, payload, key, "vai_test", "/", false, nil)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrSessionInvalid))
 }
 
 func TestOIDCCookie_SetAndClear(t *testing.T) {
