@@ -131,6 +131,7 @@ func TestSessionPayload_ToUser(t *testing.T) {
 		Email:  "a@b.com",
 		Name:   "A B",
 		OrgID:  "org-uuid",
+		Mbs:    []Membership{{OrgID: "org-uuid", OrgName: "Org", Role: "owner"}, {OrgID: "org-2"}},
 		Claims: map[string]string{"dept": "eng"},
 	}
 	u := p.toUser()
@@ -139,6 +140,9 @@ func TestSessionPayload_ToUser(t *testing.T) {
 	assert.Equal(t, "A B", u.Name)
 	assert.Equal(t, "org-uuid", u.OrgID)
 	assert.Equal(t, "eng", u.Claims["dept"])
+	assert.Len(t, u.Memberships, 2)
+	assert.Equal(t, "owner", u.Memberships[0].Role)
+	assert.Equal(t, "org-2", u.Memberships[1].OrgID)
 }
 
 func TestSessionPayload_FromUser(t *testing.T) {
@@ -149,11 +153,12 @@ func TestSessionPayload_FromUser(t *testing.T) {
 		Exp:     12345,
 	}
 	u := &User{
-		Sub:    "new-sub",
-		Email:  "new@email.com",
-		Name:   "New Name",
-		OrgID:  "new-org",
-		Claims: map[string]string{"key": "val"},
+		Sub:         "new-sub",
+		Email:       "new@email.com",
+		Name:        "New Name",
+		OrgID:       "new-org",
+		Memberships: []Membership{{OrgID: "new-org"}, {OrgID: "other-org", OrgSlug: "other"}},
+		Claims:      map[string]string{"key": "val"},
 	}
 	p.fromUser(u)
 	assert.Equal(t, "new-sub", p.Sub)
@@ -161,9 +166,39 @@ func TestSessionPayload_FromUser(t *testing.T) {
 	assert.Equal(t, "New Name", p.Name)
 	assert.Equal(t, "new-org", p.OrgID)
 	assert.Equal(t, "val", p.Claims["key"])
+	assert.Len(t, p.Mbs, 2)
+	assert.Equal(t, "other", p.Mbs[1].OrgSlug)
 	// IDToken and Exp preserved
 	assert.Equal(t, "keep-this", p.IDToken)
 	assert.Equal(t, int64(12345), p.Exp)
+}
+
+// TestEncryptDecrypt_RoundTrip_WithMemberships pins that the additive
+// multi-org membership set (v0.14.0) survives the encrypted-cookie round-trip,
+// so a consumer's org-picker still has the candidate orgs on the next request.
+func TestEncryptDecrypt_RoundTrip_WithMemberships(t *testing.T) {
+	key := testKey(t)
+	payload := &sessionPayload{
+		Sub:   "user-mbs",
+		Email: "m@vaudience.ai",
+		OrgID: "org-alpha",
+		Mbs: []Membership{
+			{OrgID: "org-alpha", OrgName: "Alpha", OrgSlug: "alpha", Role: "owner"},
+			{OrgID: "org-beta", OrgName: "Beta", Role: "member"},
+		},
+		Exp: time.Now().UTC().Add(time.Hour).Unix(),
+	}
+	encrypted, err := encryptSession(payload, key)
+	require.NoError(t, err)
+	decrypted, err := decryptSession(encrypted, key)
+	require.NoError(t, err)
+	require.Len(t, decrypted.Mbs, 2)
+	assert.Equal(t, "org-alpha", decrypted.Mbs[0].OrgID)
+	assert.Equal(t, "Alpha", decrypted.Mbs[0].OrgName)
+	assert.Equal(t, "alpha", decrypted.Mbs[0].OrgSlug)
+	assert.Equal(t, "owner", decrypted.Mbs[0].Role)
+	assert.Equal(t, "org-beta", decrypted.Mbs[1].OrgID)
+	assert.Equal(t, "member", decrypted.Mbs[1].Role)
 }
 
 func TestEncryptDecrypt_RoundTrip_WithOrgIDAndClaims(t *testing.T) {

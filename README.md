@@ -29,10 +29,18 @@ auth, err := vaioidc.New(ctx, vaioidc.Config{
         if err != nil {
             return nil, err // login rejected
         }
-        if len(resp.Memberships) == 1 {
+        // Surface every org so a multi-org user can be offered a picker;
+        // default the active org to the first (obolresolver does exactly this).
+        for _, m := range resp.Memberships {
+            user.Memberships = append(user.Memberships, vaioidc.Membership{
+                OrgID: m.OrgID, OrgName: m.OrgName, OrgSlug: m.OrgSlug, Role: m.Role,
+            })
+        }
+        if len(resp.Memberships) > 0 {
             user.OrgID = resp.Memberships[0].OrgID
         }
-        // Multiple orgs: leave OrgID empty, redirect to org picker post-login
+        // Post-login: if len(user.Memberships) > 1, render an org picker and
+        // commit the choice with Auth.UpdateSession (sets user.OrgID).
         return user, nil
     },
 })
@@ -87,7 +95,7 @@ Browser → GET /auth/login
             3. Call UserResolver → Obol POST /api/v1/identity/ensure
                → Obol upserts user, ensures org exists, returns memberships
                → UserResolver sets user.OrgID
-            4. Encrypt session cookie (AES-256-GCM): Sub, Email, Name, OrgID, Claims
+            4. Encrypt session cookie (AES-256-GCM): Sub, Email, Name, OrgID, Memberships, Claims
        → redirect to /dashboard
        → RequireSession middleware decrypts cookie → User in context
 ```

@@ -73,6 +73,58 @@ func TestNew_HappyPath_FirstMembershipPicked(t *testing.T) {
 	if out.OrgID != "org-alpha" {
 		t.Errorf("OrgID = %q, want org-alpha (first membership)", out.OrgID)
 	}
+	// v0.14.0: the FULL membership set must be surfaced for org-picker use,
+	// not just the defaulted OrgID.
+	if len(out.Memberships) != 2 {
+		t.Fatalf("Memberships len = %d, want 2 (full set surfaced)", len(out.Memberships))
+	}
+	if out.Memberships[0].OrgID != "org-alpha" || out.Memberships[0].OrgName != "Alpha" || out.Memberships[0].Role != "owner" {
+		t.Errorf("Memberships[0] = %+v, want {org-alpha Alpha owner}", out.Memberships[0])
+	}
+	if out.Memberships[1].OrgID != "org-beta" || out.Memberships[1].Role != "member" {
+		t.Errorf("Memberships[1] = %+v, want org-beta/member", out.Memberships[1])
+	}
+}
+
+// TestNew_SingleMembership_NoPickerNeeded pins the backward-compatible shape:
+// one membership → OrgID set + a 1-element Memberships slice (consumer sees
+// len <= 1 and skips the picker).
+func TestNew_SingleMembership_NoPickerNeeded(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"data":{"user_id":"u","memberships":[{"org_id":"solo","org_slug":"solo-co"}]},"error":null}`)
+	}))
+	defer srv.Close()
+	r := New(Config{BaseURL: srv.URL, Client: srv.Client()})
+	out, err := r(context.Background(), &vaioidc.User{Sub: "u"})
+	if err != nil {
+		t.Fatalf("resolver: %v", err)
+	}
+	if out.OrgID != "solo" {
+		t.Errorf("OrgID = %q, want solo", out.OrgID)
+	}
+	if len(out.Memberships) != 1 || out.Memberships[0].OrgSlug != "solo-co" {
+		t.Errorf("Memberships = %+v, want one entry with slug solo-co", out.Memberships)
+	}
+}
+
+// TestNew_EmptyMemberships_LeavesMembershipsNil ensures the additive field is
+// not populated on the reject/allow-empty paths.
+func TestNew_EmptyMemberships_LeavesMembershipsNil(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"data":{"user_id":"x","memberships":[]},"error":null}`)
+	}))
+	defer srv.Close()
+	r := New(Config{BaseURL: srv.URL, Client: srv.Client(), AllowEmptyMembership: true})
+	out, err := r(context.Background(), &vaioidc.User{Sub: "x"})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if out == nil {
+		t.Fatal("AllowEmptyMembership=true should pass user through")
+	}
+	if out.Memberships != nil {
+		t.Errorf("Memberships should be nil for empty membership set; got %+v", out.Memberships)
+	}
 }
 
 func TestNew_EmptyMemberships_RejectsByDefault(t *testing.T) {

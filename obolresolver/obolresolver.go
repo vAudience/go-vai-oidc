@@ -111,10 +111,11 @@ type obolEnvelope struct {
 // membership. The resolver:
 //
 //  1. Issues a POST with {sub, email, name} from the OIDC user.
-//  2. Picks the first membership (multi-org users handled
-//     per-service via `vaioidc.Auth.UpdateSession()` switcher
-//     UI per spec §5.4).
-//  3. Sets user.OrgID = memberships[0].org_id.
+//  2. Surfaces the FULL membership set on user.Memberships (v0.14.0)
+//     so a multi-org consumer can render a picker; sets user.OrgID =
+//     memberships[0].org_id as the backward-compatible default active
+//     org. The consumer commits a different pick via
+//     `vaioidc.Auth.UpdateSession()` (spec §5.4).
 //
 // On failure paths:
 //   - HTTP-transport / 5xx / non-2xx → returns wrapped error;
@@ -206,11 +207,35 @@ func New(cfg Config) vaioidc.UserResolver {
 			return nil, nil
 		}
 
-		// Pick the first membership; multi-org switching is per-
-		// consumer (auth.UpdateSession()).
+		// Surface the FULL membership set to the consumer (v0.14.0) so a
+		// multi-org user can be offered an org picker instead of silently
+		// inheriting the first org. OrgID still defaults to the first
+		// membership for backward compatibility: single-org consumers and
+		// consumers that ignore User.Memberships behave exactly as before;
+		// a multi-org-aware consumer reads len(user.Memberships) > 1 and
+		// calls Auth.UpdateSession() once the user picks.
+		user.Memberships = toVaiMemberships(inner.Memberships)
 		user.OrgID = inner.Memberships[0].OrgID
 		return user, nil
 	}
+}
+
+// toVaiMemberships maps obol's per-row membership shape to the public
+// vaioidc.Membership type carried on User (and persisted in the session).
+func toVaiMemberships(in []IdentityEnsureMembership) []vaioidc.Membership {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]vaioidc.Membership, 0, len(in))
+	for _, m := range in {
+		out = append(out, vaioidc.Membership{
+			OrgID:   m.OrgID,
+			OrgName: m.OrgName,
+			OrgSlug: m.OrgSlug,
+			Role:    m.Role,
+		})
+	}
+	return out
 }
 
 // truncate caps log-friendly error messages.

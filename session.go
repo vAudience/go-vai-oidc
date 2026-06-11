@@ -23,7 +23,8 @@ type sessionPayload struct {
 	Sub     string            `json:"sub"`
 	Email   string            `json:"email"`
 	Name    string            `json:"name"`
-	OrgID   string            `json:"oid,omitempty"` // organization ID (resolved by UserResolver)
+	OrgID   string            `json:"oid,omitempty"` // active organization ID (resolved by UserResolver)
+	Mbs     []Membership      `json:"mbs,omitempty"` // full org membership set (v0.14.0; for multi-org pickers)
 	Claims  map[string]string `json:"clm,omitempty"` // extra claims from ExtraClaims config
 	IDToken string            `json:"idt"`           // raw ID token for Keycloak logout hint
 	Exp     int64             `json:"exp"`           // unix timestamp
@@ -41,11 +42,12 @@ type sessionPayload struct {
 // toUser converts the payload to a public User.
 func (p *sessionPayload) toUser() *User {
 	return &User{
-		Sub:    p.Sub,
-		Email:  p.Email,
-		Name:   p.Name,
-		OrgID:  p.OrgID,
-		Claims: p.Claims,
+		Sub:         p.Sub,
+		Email:       p.Email,
+		Name:        p.Name,
+		OrgID:       p.OrgID,
+		Memberships: p.Mbs,
+		Claims:      p.Claims,
 	}
 }
 
@@ -56,6 +58,7 @@ func (p *sessionPayload) fromUser(u *User) {
 	p.Email = u.Email
 	p.Name = u.Name
 	p.OrgID = u.OrgID
+	p.Mbs = u.Memberships
 	p.Claims = u.Claims
 }
 

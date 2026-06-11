@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.14.0 — 2026-06-11
+
+`DC-MULTI-ORG` — **surface the full org membership set** so consumers can
+render a multi-org picker instead of silently inheriting the first membership.
+
+### Added
+
+- **`User.Memberships []Membership`** — the complete set of orgs the
+  authenticated user belongs to, when a `UserResolver` supplies it. New
+  `Membership{OrgID, OrgName, OrgSlug, Role}` type. Persisted in the encrypted
+  session (payload key `mbs`) so a post-login org picker still has the candidate
+  orgs on later requests, and so it survives `Auth.UpdateSession`.
+- **`obolresolver` now populates `User.Memberships`** from Obol's
+  `/identity/ensure` response (all rows, not just the first).
+
+### Behavior
+
+- **Fully backward compatible.** `obolresolver` still sets
+  `User.OrgID = memberships[0].OrgID` as the default active org, so single-org
+  consumers and any consumer that ignores `User.Memberships` behave exactly as
+  in v0.13. The new field is purely additive.
+- A multi-org-aware consumer reads `len(user.Memberships) > 1`, presents an org
+  picker, then calls `Auth.UpdateSession(w, r, func(u *User){ u.OrgID = chosen })`
+  to commit the selection. `len <= 1` needs no picker.
+- Empty-membership paths (reject, or `AllowEmptyMembership=true`) leave
+  `Memberships` nil — unchanged.
+- Session size: memberships are small (a handful of short fields per org); the
+  v0.13 cookie chunking already absorbs any overflow.
+
 ## v0.13.0 — 2026-06-06
 
 `DC-APIKEY-followup` — **session-cookie chunking**, fixing a login-loop
