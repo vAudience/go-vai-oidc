@@ -489,16 +489,17 @@ func (a *Auth) handleCallback(w http.ResponseWriter, r *http.Request) {
 		user = resolved
 	}
 
-	// Create and encrypt session.
+	// Create and encrypt session. Build the user-visible fields via fromUser so
+	// EVERY field that round-trips through a User (incl. Memberships, v0.14.0)
+	// is persisted — a hand-rolled literal here silently dropped Mbs in v0.14.0,
+	// leaving multi-org pickers without their membership set. IDToken + Exp are
+	// session-only (not on User), so they are set directly and fromUser preserves
+	// them.
 	payload := &sessionPayload{
-		Sub:     user.Sub,
-		Email:   user.Email,
-		Name:    user.Name,
-		OrgID:   user.OrgID,
-		Claims:  user.Claims,
 		IDToken: rawIDToken,
 		Exp:     time.Now().UTC().Add(a.cfg.SessionTTL).Unix(),
 	}
+	payload.fromUser(user)
 
 	// DC-APIKEY-03: optionally retain the access+refresh tokens so the service
 	// can later forward a valid Keycloak access token to a downstream API.

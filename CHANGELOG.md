@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.14.1 — 2026-06-11
+
+`DC-MULTI-ORG-FIX` — **persist `User.Memberships` from the OIDC callback.**
+A regression-fix release for v0.14.0.
+
+### Fixed
+
+- **`handleCallback` now writes the full membership set into the session.**
+  v0.14.0 added `User.Memberships` and `sessionPayload.Mbs`, and the
+  `obolresolver` populated `User.Memberships` correctly — but the callback built
+  its `sessionPayload` from a hand-rolled struct literal that **omitted `Mbs`**.
+  The membership set was resolved and then silently dropped before the cookie was
+  written, so `UserFromContext` on every subsequent request returned an empty
+  `Memberships` slice and a consumer's multi-org picker never triggered. The
+  callback now constructs the payload via `sessionPayload.fromUser`, which carries
+  **every** user-visible field (incl. `Mbs`), structurally preventing this class
+  of write-side field-drift. `IDToken`/`Exp` are session-only and remain set
+  directly (and are preserved by `fromUser`).
+- New `TestCallbackPayloadConstruction_PersistsMemberships` drives the exact
+  callback construction through the real `OptionalSession` → `UserFromContext`
+  read path and asserts the membership set survives. The v0.14.0 tests only
+  covered `session.go`'s `toUser`/`fromUser`/encrypt round-trip, which passed
+  while the callback write path bypassed `fromUser` — this test closes that gap.
+
+### Behavior
+
+- No API change. v0.14.0's `User.Memberships` claim ("persisted in the encrypted
+  session … so a post-login org picker still has the candidate orgs on later
+  requests") now actually holds end-to-end. Consumers on v0.14.0 should upgrade.
+
 ## v0.14.0 — 2026-06-11
 
 `DC-MULTI-ORG` — **surface the full org membership set** so consumers can

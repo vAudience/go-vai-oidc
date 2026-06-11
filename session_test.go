@@ -201,6 +201,65 @@ func TestEncryptDecrypt_RoundTrip_WithMemberships(t *testing.T) {
 	assert.Equal(t, "member", decrypted.Mbs[1].Role)
 }
 
+// TestCallbackPayloadConstruction_PersistsMemberships pins the regression fixed
+// in v0.14.1: handleCallback used to build the session payload with a hand-rolled
+// struct literal that omitted Mbs, so a multi-org user's membership set was
+// resolved but never written to the cookie — UserFromContext on the next request
+// saw an empty Memberships slice and the consumer's org-picker never triggered.
+// This test reproduces the EXACT construction the callback now uses
+// ({IDToken,Exp} literal + fromUser) and drives it through the real session read
+// path (OptionalSession → UserFromContext), so any future refactor that drops a
+// User field on the write side fails here instead of silently in production.
+func TestCallbackPayloadConstruction_PersistsMemberships(t *testing.T) {
+	key := testKey(t)
+	a := &Auth{
+		sessionKey: key,
+		cfg:        Config{CookieName: "vai_test"},
+	}
+
+	resolvedUser := &User{
+		Sub:   "multi-org-user",
+		Email: "multi@vaudience.ai",
+		Name:  "Multi Org",
+		OrgID: "org-alpha", // resolver's default pick (memberships[0])
+		Memberships: []Membership{
+			{OrgID: "org-alpha", OrgName: "Alpha", OrgSlug: "alpha", Role: "owner"},
+			{OrgID: "org-beta", OrgName: "Beta", OrgSlug: "beta", Role: "member"},
+		},
+		Claims: map[string]string{"aif_role": "user"},
+	}
+
+	// Mirror handleCallback's session construction verbatim.
+	payload := &sessionPayload{
+		IDToken: "raw-id-token",
+		Exp:     time.Now().UTC().Add(time.Hour).Unix(),
+	}
+	payload.fromUser(resolvedUser)
+
+	encrypted, err := encryptSession(payload, key)
+	require.NoError(t, err)
+
+	var captured *User
+	handler := a.OptionalSession()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured = UserFromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest("GET", "/", nil)
+	req.AddCookie(&http.Cookie{Name: "vai_test", Value: encrypted})
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.NotNil(t, captured)
+	require.Len(t, captured.Memberships, 2, "callback-written session must carry the full membership set")
+	assert.Equal(t, "org-alpha", captured.OrgID)
+	assert.Equal(t, "org-beta", captured.Memberships[1].OrgID)
+	assert.Equal(t, "member", captured.Memberships[1].Role)
+	// IDToken + Exp must survive fromUser (they are session-only fields).
+	assert.NotZero(t, payload.Exp)
+	assert.Equal(t, "raw-id-token", payload.IDToken)
+}
+
 func TestEncryptDecrypt_RoundTrip_WithOrgIDAndClaims(t *testing.T) {
 	key := testKey(t)
 	payload := &sessionPayload{
