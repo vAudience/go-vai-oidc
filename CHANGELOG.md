@@ -1,5 +1,40 @@
 # Changelog
 
+## v0.15.1 — 2026-07-05
+
+`DC-AUTO-2` (aigentflow) — **`IssueSession` now persists `Memberships` and `RealmRoles`.**
+
+### Fixed
+
+- **`Auth.IssueSession` dropped `Memberships` (v0.14.0) and `RealmRoles`
+  (v0.15.0).** The inline-login / ROPC entry point (v0.10.0+) built its
+  `sessionPayload` from a hand-rolled struct literal that only copied
+  `Sub/Email/Name/OrgID/Claims` — so a user who signed in via an inline
+  credential form lost their full org-membership set (multi-org pickers never
+  triggered) and their Keycloak realm roles, even though the standard
+  Authorization-Code callback had already been fixed to use `fromUser` in
+  v0.14.1. `IssueSession` now uses the same `{IDToken,Exp}` literal +
+  `fromUser` construction as `handleCallback`, keeping the two session-write
+  sites in lockstep. This was the exact field-drift class already fixed twice
+  before (callback in v0.14.1, test helper in v0.15.0) — this closes the last
+  known site.
+
+### Tests
+
+- New `TestIssueSession_PersistsMembershipsAndRealmRoles` drives the real
+  exported `IssueSession` API end-to-end and reads the cookie back through the
+  production session path (`OptionalSession` → `UserFromContext`), asserting
+  both the membership set and realm roles survive. Verified red before the fix,
+  green after — so any future literal-based regression in `IssueSession` fails
+  here instead of silently in production. (Prior coverage only mirrored the
+  *callback's* construction, not the exported function, which is how this site
+  slipped through v0.14.1 and v0.15.0.)
+
+### Behavior
+
+- No breaking change. Additive on the wire (`omitempty` on `mbs`/`rls`);
+  existing sessions are unaffected.
+
 ## v0.15.0 — 2026-07-05
 
 `DC-FACELIFT-01` (obol) — **first-class Keycloak realm roles on `User`.**

@@ -209,15 +209,17 @@ func (a *Auth) IssueSession(w http.ResponseWriter, r *http.Request, user *User, 
 	if user == nil {
 		return ErrSessionInvalid
 	}
+	// Build the user-visible fields via fromUser so EVERY field that round-trips
+	// through a User is persisted — kept in lockstep with handleCallback. A
+	// hand-rolled literal here silently dropped Mbs (v0.14.0) and Rls (v0.15.0),
+	// leaving inline-login (ROPC) sessions without their membership set (multi-org
+	// pickers broke) and without realm roles. IDToken + Exp are session-only (not
+	// on User), so they are set directly and fromUser preserves them.
 	payload := &sessionPayload{
-		Sub:     user.Sub,
-		Email:   user.Email,
-		Name:    user.Name,
-		OrgID:   user.OrgID,
-		Claims:  user.Claims,
 		IDToken: rawIDToken,
 		Exp:     time.Now().UTC().Add(a.cfg.SessionTTL).Unix(),
 	}
+	payload.fromUser(user)
 	return setSessionCookie(w, payload, a.sessionKey, a.cfg.CookieName, a.cfg.CookiePath, a.cfg.secureCookie(), a.logger)
 }
 

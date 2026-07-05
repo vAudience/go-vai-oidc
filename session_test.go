@@ -294,6 +294,63 @@ func TestCallbackPayloadConstruction_PersistsMemberships(t *testing.T) {
 	assert.Equal(t, "raw-id-token", payload.IDToken)
 }
 
+// TestIssueSession_PersistsMembershipsAndRealmRoles drives the REAL public
+// IssueSession API (the inline-login/ROPC entry point, v0.10.0+) end-to-end and
+// reads the resulting cookie back through the production session read path
+// (OptionalSession → UserFromContext). It pins the fix for the field-drift bug:
+// IssueSession built its payload with a hand-rolled literal that omitted Mbs
+// (v0.14.0) and Rls (v0.15.0) — so inline-login users lost their membership set
+// (multi-org pickers broke) and their realm roles, even though the standard
+// callback path had already been fixed to use fromUser (v0.14.1). Unlike the
+// callback-construction test above, this exercises the actual exported function,
+// so any future literal-based regression in IssueSession fails here.
+func TestIssueSession_PersistsMembershipsAndRealmRoles(t *testing.T) {
+	key := testKey(t)
+	a := &Auth{
+		sessionKey: key,
+		cfg:        Config{CookieName: "vai_test", SessionTTL: time.Hour},
+	}
+
+	user := &User{
+		Sub:   "inline-login-user",
+		Email: "inline@vaudience.ai",
+		Name:  "Inline Login",
+		OrgID: "org-alpha",
+		Memberships: []Membership{
+			{OrgID: "org-alpha", OrgName: "Alpha", OrgSlug: "alpha", Role: "owner"},
+			{OrgID: "org-beta", OrgName: "Beta", OrgSlug: "beta", Role: "member"},
+		},
+		RealmRoles: []string{"obol-system-admin", "offline_access"},
+		Claims:     map[string]string{"aif_role": "user"},
+	}
+
+	issueReq := httptest.NewRequest("POST", "/login/inline", nil)
+	issueW := httptest.NewRecorder()
+	require.NoError(t, a.IssueSession(issueW, issueReq, user, "raw-id-token"))
+
+	// Replay every cookie IssueSession wrote (chunk-aware) into a fresh request.
+	req := httptest.NewRequest("GET", "/", nil)
+	for _, c := range issueW.Result().Cookies() {
+		req.AddCookie(c)
+	}
+
+	var captured *User
+	handler := a.OptionalSession()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured = UserFromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	}))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.NotNil(t, captured)
+	assert.Equal(t, "org-alpha", captured.OrgID)
+	require.Len(t, captured.Memberships, 2, "IssueSession must carry the full membership set (v0.14.0 field-drift)")
+	assert.Equal(t, "org-beta", captured.Memberships[1].OrgID)
+	assert.Equal(t, "member", captured.Memberships[1].Role)
+	assert.Equal(t, []string{"obol-system-admin", "offline_access"}, captured.RealmRoles, "IssueSession must carry realm roles (v0.15.0 field-drift)")
+}
+
 func TestEncryptDecrypt_RoundTrip_WithOrgIDAndClaims(t *testing.T) {
 	key := testKey(t)
 	payload := &sessionPayload{
