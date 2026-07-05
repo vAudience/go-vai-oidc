@@ -35,6 +35,26 @@ type User struct {
 	// Claims holds additional claims extracted from the ID token.
 	// Populated from Config.ExtraClaims. Non-string claim values are JSON-serialized.
 	Claims map[string]string `json:"claims,omitempty"`
+
+	// RealmRoles holds the Keycloak realm roles from the ID token's standard
+	// `realm_access.roles` claim, extracted unconditionally (no Config.ExtraClaims
+	// entry needed — this is a first-class field, like OrgID/Memberships). Nil
+	// if the claim was absent or the ID token carried no realm roles at all.
+	RealmRoles []string `json:"realm_roles,omitempty"`
+}
+
+// HasRealmRole reports whether the user's ID token carried the given Keycloak
+// realm role. Case-sensitive exact match, matching Keycloak's own role names.
+func (u *User) HasRealmRole(role string) bool {
+	if u == nil {
+		return false
+	}
+	for _, r := range u.RealmRoles {
+		if r == role {
+			return true
+		}
+	}
+	return false
 }
 
 // Membership is one organization the authenticated user belongs to, as resolved

@@ -173,6 +173,40 @@ func TestSessionPayload_FromUser(t *testing.T) {
 	assert.Equal(t, int64(12345), p.Exp)
 }
 
+// TestSessionPayload_ToUser_RealmRoles and its FromUser counterpart pin that
+// RealmRoles (v0.15.0) rides through toUser/fromUser like every other
+// User-visible field — the exact field-drift class fixed for Memberships in
+// v0.14.1.
+func TestSessionPayload_ToUser_RealmRoles(t *testing.T) {
+	p := &sessionPayload{Sub: "sub-1", Rls: []string{"obol-system-admin", "offline_access"}}
+	u := p.toUser()
+	assert.Equal(t, []string{"obol-system-admin", "offline_access"}, u.RealmRoles)
+}
+
+func TestSessionPayload_FromUser_RealmRoles(t *testing.T) {
+	p := &sessionPayload{}
+	u := &User{Sub: "s", RealmRoles: []string{"obol-system-admin"}}
+	p.fromUser(u)
+	assert.Equal(t, []string{"obol-system-admin"}, p.Rls)
+}
+
+// TestEncryptDecrypt_RoundTrip_WithRealmRoles pins that RealmRoles survives
+// the encrypted-cookie round-trip, so a system-admin check on a later request
+// sees the same roles the login-time ID token carried.
+func TestEncryptDecrypt_RoundTrip_WithRealmRoles(t *testing.T) {
+	key := testKey(t)
+	payload := &sessionPayload{
+		Sub: "user-admin",
+		Rls: []string{"obol-system-admin"},
+		Exp: time.Now().UTC().Add(time.Hour).Unix(),
+	}
+	encrypted, err := encryptSession(payload, key)
+	require.NoError(t, err)
+	decrypted, err := decryptSession(encrypted, key)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"obol-system-admin"}, decrypted.Rls)
+}
+
 // TestEncryptDecrypt_RoundTrip_WithMemberships pins that the additive
 // multi-org membership set (v0.14.0) survives the encrypted-cookie round-trip,
 // so a consumer's org-picker still has the candidate orgs on the next request.

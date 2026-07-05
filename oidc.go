@@ -153,6 +153,7 @@ func (p *oidcProvider) extractUser(idToken *gooidc.IDToken, logger *slog.Logger,
 	if name, ok := claims[claimName].(string); ok {
 		user.Name = name
 	}
+	user.RealmRoles = extractRealmRoles(claims)
 
 	// Extract extra claims into User.Claims map.
 	if len(extraClaims) > 0 && len(claims) > 0 {
@@ -173,6 +174,31 @@ func (p *oidcProvider) extractUser(idToken *gooidc.IDToken, logger *slog.Logger,
 	}
 
 	return user
+}
+
+// extractRealmRoles reads Keycloak's standard `realm_access.roles` ID-token
+// claim. Returns nil if the claim is absent or shaped unexpectedly (a token
+// from a differently-configured realm/IdP simply carries no realm roles,
+// which is not an error condition here).
+func extractRealmRoles(claims map[string]interface{}) []string {
+	realmAccess, ok := claims[claimRealmAccess].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	rawRoles, ok := realmAccess[claimRealmAccessRoles].([]interface{})
+	if !ok {
+		return nil
+	}
+	roles := make([]string, 0, len(rawRoles))
+	for _, r := range rawRoles {
+		if s, ok := r.(string); ok {
+			roles = append(roles, s)
+		}
+	}
+	if len(roles) == 0 {
+		return nil
+	}
+	return roles
 }
 
 // generatePKCE creates a PKCE verifier and its S256 challenge.

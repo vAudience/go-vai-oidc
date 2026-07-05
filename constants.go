@@ -44,6 +44,8 @@ const (
 	claimEmail             = "email"
 	claimName              = "name"
 	claimPreferredUsername = "preferred_username"
+	claimRealmAccess       = "realm_access"
+	claimRealmAccessRoles  = "roles"
 )
 
 // PKCE parameters.

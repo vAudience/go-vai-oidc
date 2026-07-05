@@ -26,6 +26,7 @@ type sessionPayload struct {
 	OrgID   string            `json:"oid,omitempty"` // active organization ID (resolved by UserResolver)
 	Mbs     []Membership      `json:"mbs,omitempty"` // full org membership set (v0.14.0; for multi-org pickers)
 	Claims  map[string]string `json:"clm,omitempty"` // extra claims from ExtraClaims config
+	Rls     []string          `json:"rls,omitempty"` // Keycloak realm roles (v0.15.0; first-class, no ExtraClaims entry needed)
 	IDToken string            `json:"idt"`           // raw ID token for Keycloak logout hint
 	Exp     int64             `json:"exp"`           // unix timestamp
 
@@ -48,6 +49,7 @@ func (p *sessionPayload) toUser() *User {
 		OrgID:       p.OrgID,
 		Memberships: p.Mbs,
 		Claims:      p.Claims,
+		RealmRoles:  p.Rls,
 	}
 }
 
@@ -60,6 +62,7 @@ func (p *sessionPayload) fromUser(u *User) {
 	p.OrgID = u.OrgID
 	p.Mbs = u.Memberships
 	p.Claims = u.Claims
+	p.Rls = u.RealmRoles
 }
 
 // encryptSession serializes and encrypts a session payload.

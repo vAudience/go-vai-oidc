@@ -110,11 +110,12 @@ Browser → GET /auth/login
 
 ```go
 type User struct {
-    Sub    string            // Keycloak subject UUID — stable user identifier
-    Email  string            // e.g. "toni.wagner@vaudience.ai"
-    Name   string            // e.g. "Toni Wagner"
-    OrgID  string            // Organization UUID (resolved by UserResolver via Obol)
-    Claims map[string]string // Extra claims from ExtraClaims config
+    Sub        string            // Keycloak subject UUID — stable user identifier
+    Email      string            // e.g. "toni.wagner@vaudience.ai"
+    Name       string            // e.g. "Toni Wagner"
+    OrgID      string            // Organization UUID (resolved by UserResolver via Obol)
+    Claims     map[string]string // Extra claims from ExtraClaims config
+    RealmRoles []string          // Keycloak realm roles from realm_access.roles
 }
 ```
 
@@ -125,6 +126,7 @@ type User struct {
 | `Name` | ID token `name` claim | May be empty. Falls back to `preferred_username`. |
 | `OrgID` | `UserResolver` callback | Set by your resolver (typically from Obol). Empty if resolver not configured or user has multiple orgs (pending selection). |
 | `Claims` | ID token extra claims | Populated from `Config.ExtraClaims`. Non-string values are JSON-serialized. |
+| `RealmRoles` | ID token `realm_access.roles` claim | First-class, no `ExtraClaims` entry needed. Nil if the token carries none. Use `user.HasRealmRole("your-role")` to check membership — e.g. to gate a highest-trust tier (system-admin) on an explicit Keycloak role rather than "which OIDC client authenticated this session." |
 
 ## UserResolver — Org Resolution via Obol
 

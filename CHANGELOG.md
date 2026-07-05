@@ -1,5 +1,40 @@
 # Changelog
 
+## v0.15.0 — 2026-07-05
+
+`DC-FACELIFT-01` (obol) — **first-class Keycloak realm roles on `User`.**
+
+### Added
+
+- **`User.RealmRoles []string`** and **`User.HasRealmRole(role string) bool`**.
+  Extracted unconditionally from the ID token's standard `realm_access.roles`
+  claim (no `Config.ExtraClaims` entry needed — this is a first-class field,
+  like `OrgID`/`Memberships`). Nil if the claim is absent or shaped
+  unexpectedly; that's not an error, just "this IdP/realm carries no realm
+  roles for this token."
+- Persisted in the encrypted session (`sessionPayload.Rls`) via `toUser`/
+  `fromUser`, so it survives the cookie round-trip like every other
+  user-visible field.
+- Motivating use case: a consumer that serves more than one user class from
+  one session mechanism (e.g. obol's org-admins + system-admins) can now
+  gate the highest-trust tier on an explicit Keycloak realm role instead of
+  inventing a side-channel claims scheme or, worse, trusting "which OIDC
+  client authenticated this session" as an implicit role signal.
+
+### Fixed
+
+- `TestAuth.TestSessionCookie` (test helper) built its `sessionPayload` from
+  a hand-rolled literal that silently dropped `Memberships` — the same
+  field-drift class fixed for the real callback path in v0.14.1, just
+  unnoticed in the test helper. Now uses `fromUser` like every other payload
+  construction site, so `Memberships` and the new `RealmRoles` both survive.
+
+### Behavior
+
+- No breaking change. `RealmRoles` is additive (`omitempty` on the wire);
+  existing sessions decode fine with a nil `RealmRoles` until the user's next
+  login.
+
 ## v0.14.1 — 2026-06-11
 
 `DC-MULTI-ORG-FIX` — **persist `User.Memberships` from the OIDC callback.**
