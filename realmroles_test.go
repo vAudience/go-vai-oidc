@@ -27,6 +27,19 @@ func TestExtractRealmRoles(t *testing.T) {
 			want:   nil,
 		},
 		{
+			// A generic (non-Keycloak) provider — Google/Dex/Okta — issues
+			// no realm_access claim at all; this must yield empty roles,
+			// not an error, so generic-OIDC logins are first-class.
+			name: "non-Keycloak provider token (no realm_access)",
+			claims: map[string]interface{}{
+				"sub":            "1234567890",
+				"email":          "alice@example.com",
+				"email_verified": true,
+				"iss":            "https://accounts.google.com",
+			},
+			want: nil,
+		},
+		{
 			name:   "realm_access not an object",
 			claims: map[string]interface{}{"realm_access": "not-an-object"},
 			want:   nil,

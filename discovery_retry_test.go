@@ -96,9 +96,46 @@ func makeFlakyKeycloakServer(t *testing.T, failCount int32) (*httptest.Server, *
 		}
 		// Derive the public URL from the server itself.
 		base := fmt.Sprintf("http://%s/realms/test", r.Host)
-		fmt.Fprintf(w, validDiscoveryDocTemplate, base, base, base, base, base, base)
+		_, _ = fmt.Fprintf(w, validDiscoveryDocTemplate, base, base, base, base, base, base)
 	}))
 	return srv, &calls
+}
+
+// makeGenericIssuerServer returns an httptest.Server that serves a valid
+// OIDC discovery document at the ROOT issuer (no Keycloak "/realms/..."
+// path segment), modeling a generic provider such as Google, Okta, or
+// Dex. Used to prove Config.IssuerURL discovery works against a
+// non-Keycloak-shaped issuer.
+func makeGenericIssuerServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/.well-known/openid-configuration") {
+			http.NotFound(w, r)
+			return
+		}
+		base := fmt.Sprintf("http://%s", r.Host) // issuer == server root, no /realms/
+		_, _ = fmt.Fprintf(w, validDiscoveryDocTemplate, base, base, base, base, base, base)
+	}))
+	return srv
+}
+
+// TestDiscoverWithRetry_genericIssuerNoRealmPath proves discovery succeeds
+// against a generic (non-Keycloak) issuer — the server root is passed as
+// the discoveryURL exactly as Config.IssuerURL resolves for Google/Okta/Dex,
+// with no "/realms/<realm>" composition.
+func TestDiscoverWithRetry_genericIssuerNoRealmPath(t *testing.T) {
+	srv := makeGenericIssuerServer(t)
+	defer srv.Close()
+
+	prov, err := discoverWithRetry(context.Background(), discardLogger(), 30*time.Second,
+		srv.URL, "client-id", "secret",
+		srv.URL+"/cb", "", []string{"openid"})
+	if err != nil {
+		t.Fatalf("expected generic-issuer discovery to succeed, got: %v", err)
+	}
+	if prov == nil {
+		t.Fatal("expected non-nil provider for generic issuer")
+	}
 }
 
 func TestDiscoverWithRetry_succeedsAfterTransientFailures(t *testing.T) {
@@ -106,7 +143,7 @@ func TestDiscoverWithRetry_succeedsAfterTransientFailures(t *testing.T) {
 	defer srv.Close()
 
 	prov, err := discoverWithRetry(context.Background(), discardLogger(), 30*time.Second,
-		srv.URL, "test", "client-id", "secret",
+		srv.URL+"/realms/test", "client-id", "secret",
 		srv.URL+"/cb", "", []string{"openid"})
 	if err != nil {
 		t.Fatalf("expected success after retry, got: %v", err)
@@ -125,7 +162,7 @@ func TestDiscoverWithRetry_zeroBudgetIsSingleShot(t *testing.T) {
 	defer srv.Close()
 
 	_, err := discoverWithRetry(context.Background(), discardLogger(), 0,
-		srv.URL, "test", "client-id", "secret",
+		srv.URL+"/realms/test", "client-id", "secret",
 		srv.URL+"/cb", "", []string{"openid"})
 	if err == nil {
 		t.Fatal("expected error with zero budget + first-call-fails")
@@ -143,7 +180,7 @@ func TestDiscoverWithRetry_negativeBudgetIsSingleShot(t *testing.T) {
 	defer srv.Close()
 
 	_, err := discoverWithRetry(context.Background(), discardLogger(), -1,
-		srv.URL, "test", "client-id", "secret",
+		srv.URL+"/realms/test", "client-id", "secret",
 		srv.URL+"/cb", "", []string{"openid"})
 	if err == nil {
 		t.Fatal("expected error with negative budget + first-call-fails")
@@ -162,7 +199,7 @@ func TestDiscoverWithRetry_budgetExhaustionReturnsLastErr(t *testing.T) {
 
 	start := time.Now()
 	_, err := discoverWithRetry(context.Background(), discardLogger(), 2*time.Second,
-		srv.URL, "test", "client-id", "secret",
+		srv.URL+"/realms/test", "client-id", "secret",
 		srv.URL+"/cb", "", []string{"openid"})
 	elapsed := time.Since(start)
 	if err == nil {
@@ -189,7 +226,7 @@ func TestDiscoverWithRetry_permanentErrorShortCircuits(t *testing.T) {
 	defer srv.Close()
 
 	_, err := discoverWithRetry(context.Background(), discardLogger(), 30*time.Second,
-		srv.URL, "test", "client-id", "secret",
+		srv.URL+"/realms/test", "client-id", "secret",
 		srv.URL+"/cb", "", []string{"openid"})
 	if err == nil {
 		t.Fatal("expected error on 401")
@@ -211,7 +248,7 @@ func TestDiscoverWithRetry_parentContextCancel(t *testing.T) {
 
 	start := time.Now()
 	_, err := discoverWithRetry(ctx, discardLogger(), 30*time.Second,
-		srv.URL, "test", "client-id", "secret",
+		srv.URL+"/realms/test", "client-id", "secret",
 		srv.URL+"/cb", "", []string{"openid"})
 	elapsed := time.Since(start)
 

@@ -1,326 +1,225 @@
-# vai-oidc
+# go-vai-oidc
 
-Drop-in OIDC browser login with org resolution for vAI Go services.
+A generic Go **OIDC Relying Party** — drop-in browser login (OpenID Connect authorization-code
+flow + PKCE) with encrypted, stateless session cookies. First-class **Keycloak** convenience, but
+works with **any** spec-compliant OIDC provider (Google, Okta, Auth0, Microsoft Entra, Authentik,
+Dex, …).
 
-Users authenticate via Keycloak (Google OAuth / email+password), then vai-oidc resolves their organization via Obol. The result — `user.Sub`, `user.Email`, `user.OrgID` — is stored in an encrypted session cookie. No database, no Redis, no token refresh.
-
-Keycloak session persistence gives **de facto SSO** — users log in once, all services redirect instantly.
-
-## Quick Start
+- **Any provider** — point it at an issuer URL; discovery does the rest.
+- **Stateless** — the verified user lives in an AES-256-GCM-encrypted cookie. No database, no Redis,
+  no server-side session store, no per-request token refresh.
+- **Small surface** — `New()`, mount `Routes()`, protect handlers with `RequireSession()`, read the
+  user with `UserFromContext()`.
+- **Pluggable identity** — an optional `UserResolver` callback runs at login to enrich the user
+  (resolve an org/tenant, reject disallowed identities, etc.).
 
 ```go
-import vaioidc "github.com/vAudience/vai-oidc"
+import vaioidc "github.com/vAudience/go-vai-oidc"
 ```
 
-### 1. Create the Auth instance (at startup)
+## Quick start (any OIDC provider)
 
 ```go
 auth, err := vaioidc.New(ctx, vaioidc.Config{
-    KeycloakURL:   cfg.OIDC.BaseURL,      // "https://keycloak.dev.styx.vaieco.vaudience.io"
-    Realm:         cfg.OIDC.Realm,         // "vaudience"
-    ClientID:      cfg.OIDC.ClientID,      // "skope"
-    ClientSecret:  cfg.OIDC.ClientSecret,  // from K8s secret
-    CallbackURL:   cfg.OIDC.CallbackURL,   // "https://skope.dev.styx.../auth/callback"
-    SessionSecret: cfg.OIDC.SessionSecret, // base64-encoded 32 bytes
-
-    // Resolve the user's org during login (calls Obol)
-    UserResolver: func(ctx context.Context, user *vaioidc.User) (*vaioidc.User, error) {
-        resp, err := obolClient.EnsureIdentity(ctx, user.Sub, user.Email, user.Name)
-        if err != nil {
-            return nil, err // login rejected
-        }
-        // Surface every org so a multi-org user can be offered a picker;
-        // default the active org to the first (obolresolver does exactly this).
-        for _, m := range resp.Memberships {
-            user.Memberships = append(user.Memberships, vaioidc.Membership{
-                OrgID: m.OrgID, OrgName: m.OrgName, OrgSlug: m.OrgSlug, Role: m.Role,
-            })
-        }
-        if len(resp.Memberships) > 0 {
-            user.OrgID = resp.Memberships[0].OrgID
-        }
-        // Post-login: if len(user.Memberships) > 1, render an org picker and
-        // commit the choice with Auth.UpdateSession (sets user.OrgID).
-        return user, nil
-    },
+    // Generic issuer — discovery hits IssuerURL + "/.well-known/openid-configuration".
+    IssuerURL:     "https://accounts.google.com",
+    ClientID:      "your-client-id",
+    ClientSecret:  "your-client-secret",
+    CallbackURL:   "https://app.example.com/auth/callback",
+    SessionSecret: os.Getenv("SESSION_SECRET"), // base64-encoded 32 bytes: openssl rand -base64 32
 })
 if err != nil {
     log.Fatal(err)
 }
-```
 
-### 2. Mount routes + protect pages
-
-```go
 r := chi.NewRouter()
+r.Mount("/auth", auth.Routes()) // GET /auth/login, /auth/callback, GET|POST /auth/logout
 
-// Charon S2S middleware — skip the auth routes
-r.Use(CharonS2SMiddleware(charonInstance, append(mySkipPaths, auth.SkipPathsWithPrefix("/auth")...)))
+r.Get("/", handleLanding) // public
 
-// Mount login/callback/logout handlers
-r.Mount("/auth", auth.Routes())
-
-// Public pages
-r.Get("/", handleLanding)
-
-// Protected pages — redirects to /auth/login if no session
 r.Group(func(r chi.Router) {
-    r.Use(auth.RequireSession())
+    r.Use(auth.RequireSession()) // redirects to /auth/login when no valid session
     r.Get("/dashboard", handleDashboard)
-    r.Get("/settings", handleSettings)
 })
 ```
 
-### 3. Read the user in your handlers
+Read the authenticated user in any protected handler:
 
 ```go
 func handleDashboard(w http.ResponseWriter, r *http.Request) {
     user := vaioidc.UserFromContext(r.Context())
-    // user.Sub   — "a1b2c3d4-..." (Keycloak subject UUID, stable user ID)
-    // user.Email — "toni.wagner@vaudience.ai"
-    // user.Name  — "Toni Wagner"
-    // user.OrgID — "00000000-0000-0000-0000-000000000000" (resolved by UserResolver)
-    fmt.Fprintf(w, "Hello, %s (org: %s)", user.Name, user.OrgID)
+    fmt.Fprintf(w, "Hello, %s (%s)", user.Name, user.Email)
 }
 ```
 
-## How It Works
+## Keycloak convenience path
+
+If you run Keycloak, set `KeycloakURL` + `Realm` instead of `IssuerURL` — the issuer is composed as
+`<KeycloakURL>/realms/<Realm>`:
+
+```go
+auth, err := vaioidc.New(ctx, vaioidc.Config{
+    KeycloakURL:   "https://keycloak.example.com",
+    Realm:         "acme",
+    ClientID:      "your-client-id",
+    ClientSecret:  "your-client-secret",
+    CallbackURL:   "https://app.example.com/auth/callback",
+    SessionSecret: os.Getenv("SESSION_SECRET"),
+})
+```
+
+**Exactly one** discovery source is required: either `IssuerURL`, or `KeycloakURL` + `Realm`. When
+`IssuerURL` is set, `KeycloakURL`/`Realm` are ignored.
+
+Keycloak also gives you SSO for free — once a user has logged into any client on the realm, the
+authorize step skips the login page and redirects straight back.
+
+## How it works
 
 ```
 Browser → GET /auth/login
-       → Keycloak (Google OAuth / email+password)
+       → OIDC provider (authorization-code flow + PKCE, state cookie)
        → GET /auth/callback
-            1. Verify ID token (PKCE + signature)
-            2. Extract user: Sub, Email, Name, ExtraClaims
-            3. Call UserResolver → Obol POST /api/v1/identity/ensure
-               → Obol upserts user, ensures org exists, returns memberships
-               → UserResolver sets user.OrgID
+            1. Verify ID token (signature + iss + aud) via coreos/go-oidc
+            2. Extract user: Sub, Email, Name, RealmRoles, ExtraClaims
+            3. (optional) UserResolver — enrich/reject (resolve org, gate domain, …)
             4. Encrypt session cookie (AES-256-GCM): Sub, Email, Name, OrgID, Memberships, Claims
-       → redirect to /dashboard
-       → RequireSession middleware decrypts cookie → User in context
+       → redirect to the post-login target
+       → RequireSession middleware decrypts the cookie → *User in the request context
 ```
 
-**Session cookie**: AES-256-GCM encrypted, HttpOnly, Secure, SameSite=Lax. Stateless — no database, no Redis, no token refresh.
+The session cookie is `HttpOnly`, `Secure` (unless `InsecureCookie`), `SameSite=Lax`, and encrypted
+with a per-service AES-256 key. It is self-contained — no round-trip to the provider on each request.
 
-**Keycloak SSO**: If the user already logged into any vAI service, Keycloak skips the login page entirely. The redirect chain takes ~200ms.
-
-**Org resolution**: Obol is the source of truth for user-to-org mapping. `@vaudience.ai` users are auto-assigned to the owner org (`00000000-0000-0000-0000-000000000000`). New external users get a personal org auto-created. The Obol call happens once per login — subsequent requests read OrgID from the encrypted cookie.
-
-## User Struct
+## The User
 
 ```go
 type User struct {
-    Sub        string            // Keycloak subject UUID — stable user identifier
-    Email      string            // e.g. "toni.wagner@vaudience.ai"
-    Name       string            // e.g. "Toni Wagner"
-    OrgID      string            // Organization UUID (resolved by UserResolver via Obol)
-    Claims     map[string]string // Extra claims from ExtraClaims config
-    RealmRoles []string          // Keycloak realm roles from realm_access.roles
+    Sub         string            // subject claim — stable user identifier; use as a foreign key
+    Email       string            // email claim (may be empty if scope not granted)
+    Name        string            // name claim (may be empty)
+    OrgID       string            // set by your UserResolver (empty otherwise)
+    Memberships []Membership       // set by your UserResolver (multi-org/tenant support)
+    Claims      map[string]string // extra claims requested via Config.ExtraClaims
+    RealmRoles  []string          // Keycloak realm_access.roles; nil for non-Keycloak providers
 }
 ```
 
-| Field | Source | Notes |
-|-------|--------|-------|
-| `Sub` | ID token `sub` claim | Keycloak user UUID. Use as foreign key. Stable across email/IdP changes. |
-| `Email` | ID token `email` claim | May be empty if `email` scope not granted. |
-| `Name` | ID token `name` claim | May be empty. Falls back to `preferred_username`. |
-| `OrgID` | `UserResolver` callback | Set by your resolver (typically from Obol). Empty if resolver not configured or user has multiple orgs (pending selection). |
-| `Claims` | ID token extra claims | Populated from `Config.ExtraClaims`. Non-string values are JSON-serialized. |
-| `RealmRoles` | ID token `realm_access.roles` claim | First-class, no `ExtraClaims` entry needed. Nil if the token carries none. Use `user.HasRealmRole("your-role")` to check membership — e.g. to gate a highest-trust tier (system-admin) on an explicit Keycloak role rather than "which OIDC client authenticated this session." |
+`RealmRoles` is a Keycloak convenience: for any other provider the `realm_access` claim is simply
+absent and the slice is nil (not an error). Check membership with `user.HasRealmRole("some-role")`.
 
-## UserResolver — Org Resolution via Obol
+## UserResolver — enrich or reject at login
 
-The `UserResolver` callback is called during the OIDC callback, after the ID token is verified but before the session cookie is written. This is where you resolve the user's org.
+`UserResolver` runs during the callback, after the ID token is verified and before the cookie is
+written. Return the enriched user, or a non-nil error to reject the login.
 
 ```go
 type UserResolver func(ctx context.Context, user *User) (*User, error)
-```
 
-**Contract:**
-- Receives the user extracted from the ID token (Sub, Email, Name, Claims populated)
-- Must return the enriched user (with OrgID set) or an error
-- If error is returned, the login is rejected (user redirected to LogoutRedirect)
-- Called once per login, not on every request
-
-**Standard pattern (all vAI services):**
-
-```go
-UserResolver: func(ctx context.Context, user *vaioidc.User) (*vaioidc.User, error) {
-    // Call Obol to ensure user+org exist
-    resp, err := obolClient.EnsureIdentity(ctx, user.Sub, user.Email, user.Name)
+cfg.UserResolver = func(ctx context.Context, user *vaioidc.User) (*vaioidc.User, error) {
+    // e.g. look the user up in your own system and assign an org/tenant:
+    org, err := myDirectory.EnsureUser(ctx, user.Sub, user.Email)
     if err != nil {
-        return nil, fmt.Errorf("obol identity: %w", err)
+        return nil, err // login rejected
     }
-
-    switch len(resp.Memberships) {
-    case 0:
-        return nil, errors.New("no org") // should never happen (Obol auto-creates)
-    case 1:
-        user.OrgID = resp.Memberships[0].OrgID
-    default:
-        // Multiple orgs — leave OrgID empty
-        // Service redirects to org picker page post-login
-    }
+    user.OrgID = org.ID
     return user, nil
-},
-```
-
-Obol's `POST /api/v1/identity/ensure` response:
-```json
-{
-  "data": {
-    "user_id": "keycloak-sub-uuid",
-    "memberships": [
-      {"org_id": "00000000-...", "org_name": "vAudience", "org_slug": "owner", "role": "admin"}
-    ]
-  }
 }
 ```
 
-## UpdateSession — Post-Login Org Selection
+For multi-org users, populate `user.Memberships` and leave `OrgID` empty; render a picker post-login
+and commit the choice with `auth.UpdateSession(w, r, func(u *User){ u.OrgID = chosen })`.
 
-For multi-org users, the `UserResolver` leaves `OrgID` empty. The service shows an org picker, then calls `UpdateSession` to write the selected org into the session cookie:
+**vAudience note:** `obolresolver/` is an optional reference `UserResolver` adapter that resolves
+identities against the Obol billing service. It is a vendor-specific example — generic consumers do
+not import it, and it adds no dependency to the root package. Use it as a template for your own.
+
+## Forwarding the user's access token (optional)
+
+By default the library keeps only the `id_token` (for logout) and discards the OAuth2
+access/refresh tokens. Set `RetainTokens: true` to store them in the encrypted session, then call
+`AccessToken(w, r)` to get a currently-valid access token (transparently refreshed when expired):
 
 ```go
-// POST /select-org handler
-func handleSelectOrg(auth *vaioidc.Auth) http.HandlerFunc {
-    return func(w http.ResponseWriter, r *http.Request) {
-        orgID := r.FormValue("org_id")
-        // TODO: validate orgID belongs to the user (call Obol)
-        if err := auth.UpdateSession(w, r, func(u *vaioidc.User) {
-            u.OrgID = orgID
-        }); err != nil {
-            http.Error(w, "session error", 500)
-            return
-        }
-        http.Redirect(w, r, "/dashboard", http.StatusFound)
-    }
-}
-```
-
-`UpdateSession` reads the current session, applies the mutation, and writes a new cookie. The IDToken and expiration are preserved — only User-visible fields change.
-
-## AccessToken — Forward the User's Keycloak Token (v0.12.0+)
-
-By default vai-oidc keeps **only** the `id_token` (for logout) and discards the OAuth2 access/refresh tokens. Set `Config.RetainTokens = true` to also store them in the encrypted session, then call `AccessToken(w, r)` to obtain a **currently-valid** access token — refreshed transparently via the refresh token when expired:
-
-```go
-// At startup:
-vaioidc.Config{
-    // ...
-    RetainTokens: true, // store access+refresh tokens in the session
-}
-
-// In a handler that must act on the user's behalf against a downstream API
-// (e.g. mint a Charon API key for the logged-in user):
-token, err := auth.AccessToken(w, r)
+token, err := auth.AccessToken(w, r) // ErrTokensNotRetained / ErrTokenRefreshFailed on failure
 if err != nil {
-    // ErrTokensNotRetained → retention off or pre-retention session
-    // ErrTokenRefreshFailed → re-authentication required
     http.Error(w, "re-authentication required", http.StatusUnauthorized)
     return
 }
-req.Header.Set("Authorization", "Bearer "+token) // forward to charon, etc.
+req.Header.Set("Authorization", "Bearer "+token)
 ```
 
-The returned token is the raw Keycloak access-token JWT. The downstream service validates it directly (signature + `aud`); ensure the Keycloak client emits an `aud` the downstream accepts (an audience-mapper concern — vai-oidc forwards the token opaquely). When a refresh occurs the rotated tokens are persisted back into the cookie automatically (the session TTL is preserved).
+Retaining both tokens adds ~2–4 KB to the cookie (the library warns when a written cookie approaches
+the ~4 KB browser limit; sessions are transparently chunked across cookies when needed). For refresh
+that survives the provider's SSO logout, add `"offline_access"` to `Scopes`.
 
-**Cookie-size trade-off:** retaining both tokens adds ~2–4 KB to the session cookie on top of the id_token, which can approach the ~4 KB per-cookie browser limit. A warning is logged when a written cookie crosses `CookieSizeWarnThreshold`. For refresh that survives Keycloak SSO logout, add `"offline_access"` to `Scopes`.
+## Extra claims
 
-## ExtraClaims — Custom ID Token Claims
+```go
+cfg.ExtraClaims = []string{"tenant_id", "department"} // extracted into User.Claims
+// non-string claim values are JSON-serialized into the string map
+```
 
-If your Keycloak realm has custom claim mappers, extract them into `User.Claims`:
+## Config reference
 
 ```go
 vaioidc.Config{
-    // ...
-    ExtraClaims: []string{"tenant_id", "department"},
-}
-```
+    // Discovery source — set EITHER IssuerURL OR (KeycloakURL + Realm).
+    IssuerURL    string // generic issuer, e.g. "https://accounts.google.com"
+    KeycloakURL  string // Keycloak base URL (convenience path)
+    Realm        string // Keycloak realm (convenience path)
 
-In your handler:
-```go
-user := vaioidc.UserFromContext(r.Context())
-tenant := user.Claims["tenant_id"]     // string value from ID token
-dept := user.Claims["department"]       // non-string values are JSON-serialized
-```
-
-## Config Reference
-
-```go
-vaioidc.Config{
-    // Required
-    KeycloakURL   string // Keycloak base URL
-    Realm         string // Keycloak realm name
-    ClientID      string // OIDC client ID (registered in Keycloak)
-    ClientSecret  string // OIDC client secret (from K8s secret)
-    CallbackURL   string // Full URL: https://myservice.../auth/callback
+    // Required.
+    ClientID      string
+    ClientSecret  string
+    CallbackURL   string // full URL, e.g. https://app.example.com/auth/callback
     SessionSecret string // base64-encoded 32 bytes (openssl rand -base64 32)
 
-    // Optional (with defaults)
-    LogoutRedirect string        // Post-logout redirect (default: "/")
-    LoginPath      string        // Full login path for RequireSession redirects (default: "/auth/login")
-    SessionTTL     time.Duration // Session lifetime (default: 24h)
-    CookieName     string        // Cookie name (default: "vai_session")
-    CookiePath     string        // Cookie path (default: "/")
-    InsecureCookie bool          // Allow cookies over plain HTTP (default: false)
-    Scopes         []string      // OIDC scopes (default: openid, profile, email)
-
-    // Optional: Identity resolution
-    ExtraClaims  []string      // Extra ID token claims to extract into User.Claims
-    UserResolver UserResolver  // Called during callback to resolve org (see above)
-
-    // Optional: Observability
-    Logger *slog.Logger // Structured logger (default: slog.Default())
+    // Optional (defaults shown).
+    LogoutRedirect       string        // post-logout redirect (default "/")
+    LoginPath            string        // RequireSession redirect target (default "/auth/login")
+    SessionTTL           time.Duration // cookie lifetime (default 24h)
+    CookieName           string        // (default "vai_session")
+    CookiePath           string        // (default "/")
+    InsecureCookie       bool          // allow cookies over plain http:// (dev only; default false)
+    Scopes               []string      // (default [openid, profile, email])
+    ExtraClaims          []string      // extra ID-token claims → User.Claims
+    UserResolver         UserResolver  // enrich/reject at login
+    RetainTokens         bool          // store access+refresh tokens in the session
+    RequireEmailDomain   string        // reject logins whose email domain != this
+    DiscoveryRetryBudget time.Duration // retry cold-boot discovery failures (default 90s; <0 disables)
+    IssuerURLOverride    string        // accept a different iss than the discovery URL (see below)
+    Logger               *slog.Logger  // (default slog.Default())
 }
 ```
 
-## Service Config YAML (vaiconfig)
+### `IssuerURL` vs `IssuerURLOverride`
 
-```yaml
-oidc:
-  enabled: ${SVC_OIDC_ENABLED:-true}
-  base_url: "${SVC_OIDC_BASE_URL:-https://keycloak.dev.styx.vaieco.vaudience.io}"
-  realm: "${SVC_OIDC_REALM:-vaudience}"
-  client_id: "${SVC_OIDC_CLIENT_ID:-myservice}"
-  client_secret: "${SVC_OIDC_CLIENT_SECRET:!required}"
-  callback_url: "${SVC_OIDC_CALLBACK_URL:!required}"
-  session_secret: "${SVC_OIDC_SESSION_SECRET:!required}"
-```
+They are distinct:
 
-## K8s Secrets
+- **`IssuerURL`** is *where discovery fetches from* — the provider's issuer.
+- **`IssuerURLOverride`** changes *which `iss` value is accepted*. Use it for the split-horizon
+  Kubernetes case: the pod performs discovery over a cluster-internal URL (e.g.
+  `http://keycloak.<ns>.svc.cluster.local:8080`) while the provider issues tokens with its public
+  issuer URL. Set the override to the public issuer so ID-token `iss` verification passes. This is a
+  legitimate deployment topology, not a security relaxation — the internal URL is just a different
+  network path to the same provider and the same signing keys.
 
-| Secret | Generated By | Notes |
-|---|---|---|
-| `SVC_OIDC_CLIENT_SECRET` | Keycloak realm setup (`keycloak.sh`) | Extracted from `keycloak-realm-secrets` |
-| `SVC_OIDC_SESSION_SECRET` | `gen_aes_key()` in `03-namespaces-secrets.sh` | Must be base64-encoded 32 bytes |
-| `SVC_OIDC_CALLBACK_URL` | Config override per deployment | HTTPS on Styx, HTTP on vaiDevStack |
+## Bypassing your own middleware on the auth routes
 
-## Keycloak Client Registration
-
-Your service needs a Keycloak OIDC client. This is automated in `ai_k8s_setup`:
-
-```bash
-# In scripts/lib/keycloak.sh
-kc_ensure_client "myservice" \
-    "https://myservice.dev.styx.vaieco.vaudience.io/auth/callback" \
-    "http://192.168.178.176:30XXX/auth/callback"
-```
-
-Add the call to `04-infrastructure.sh`. The function creates the client with PKCE, extracts the secret to `keycloak-realm-secrets`.
-
-## charonmw Integration
-
-vai-oidc auth routes must bypass charonmw (they're unauthenticated by definition):
+The `/auth/*` routes are unauthenticated by definition, so any auth middleware you run must skip
+them. `SkipPaths()` / `SkipPathsWithPrefix(prefix)` return those paths for you to feed into whatever
+middleware you use:
 
 ```go
-skipPaths := append(CharonSkipPaths(), auth.SkipPathsWithPrefix("/auth")...)
-r.Use(CharonS2SMiddleware(instance, skipPaths))
+skip := auth.SkipPathsWithPrefix("/auth")
+r.Use(myAuthMiddleware(skip)) // your middleware, not part of this library
+r.Mount("/auth", auth.Routes())
 ```
 
-S2S API endpoints (called by other services with Charon keys) remain protected by charonmw as before. vai-oidc only handles browser sessions.
-
 ## Testing
+
+`NewTestAuth(t)` builds an `Auth` with no OIDC discovery, so handler tests need no live provider:
 
 ```go
 func TestMyHandler(t *testing.T) {
@@ -331,10 +230,7 @@ func TestMyHandler(t *testing.T) {
 
     req := httptest.NewRequest("GET", "/dashboard", nil)
     req = auth.SetTestUser(req, &vaioidc.User{
-        Sub:   "test-user-id",
-        Email: "dev@vaudience.ai",
-        Name:  "Test User",
-        OrgID: "00000000-0000-0000-0000-000000000000",
+        Sub: "test-user", Email: "alice@example.com", Name: "Alice",
     })
 
     w := httptest.NewRecorder()
@@ -343,30 +239,13 @@ func TestMyHandler(t *testing.T) {
 }
 ```
 
-`SetTestUser` injects the user into the request context (no OIDC flow, no cookies). `TestSessionCookie` creates a real encrypted cookie for middleware-level tests.
+`SetTestUser` injects a user into the request context (no cookie); `TestSessionCookie` mints a real
+encrypted cookie for middleware-level tests.
 
-## FAQ
+## Requirements & license
 
-**Q: Do I need to change my existing API auth?**
-No. charonmw and Charon API keys are unchanged. vai-oidc is only for browser sessions. S2S auth between services still uses Charon.
-
-**Q: Do users need a Charon API key?**
-For browser UI: no. The service calls APIs using its own S2S credentials on behalf of the user. For CLI/API access: users get keys from Obol's org dashboard.
-
-**Q: What if Keycloak is down?**
-New logins fail. Existing sessions continue working (stateless cookies, no Keycloak round-trip on each request).
-
-**Q: What if Obol is down?**
-New logins fail (UserResolver can't resolve org). Existing sessions continue working.
-
-**Q: What about CSRF?**
-OIDC state parameter prevents CSRF on the login flow. For your own forms, use your existing CSRF solution — vai-oidc doesn't interfere.
-
-**Q: Can I customize the post-login redirect?**
-Yes. `/auth/login?redirect=/my/page` — after auth, the user lands there instead of `/`.
-
-**Q: Multiple services on same domain?**
-Each service has its own cookie name (configurable via `CookieName`). No conflicts.
-
-**Q: What's in the session cookie?**
-`Sub`, `Email`, `Name`, `OrgID`, `Claims`, raw ID token (for federated logout), expiration. All AES-256-GCM encrypted with a per-service key. ~1.5KB total.
+- Go 1.25+ (dependency floor: `coreos/go-oidc/v3` and `golang.org/x/oauth2` require 1.25). Public
+  dependencies only: `github.com/coreos/go-oidc/v3`, `github.com/go-chi/chi/v5`,
+  `golang.org/x/oauth2`.
+- Licensed under **Apache-2.0** (see `LICENSE`). Security policy: `SECURITY.md`. Contributions:
+  `CONTRIBUTING.md`.

@@ -105,10 +105,9 @@ func TestDeferredAuth_readyBeforeGet(t *testing.T) {
 	})
 	defer srv.Close()
 	d := NewBackground(context.Background(), newGoodCfg(srv.URL))
-	if d.Ready() {
-		// Possibly already ready if discovery is instant; not an error.
-		// Just confirm Ready() didn't crash.
-	}
+	// Ready() may already be true if discovery is instant; either way it
+	// must not crash. We assert the post-Get() invariant below.
+	_ = d.Ready()
 	_, _ = d.Get()
 	if !d.Ready() {
 		t.Error("Ready() must be true after Get() returns")

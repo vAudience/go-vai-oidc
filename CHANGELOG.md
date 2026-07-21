@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.16.0 — 2026-07-21
+
+**Generic OIDC issuer support + first public Apache-2.0 release.** Fully additive and
+backward-compatible: existing Keycloak consumers are unaffected (a config setting `KeycloakURL` +
+`Realm` behaves exactly as before).
+
+### Added
+
+- **`Config.IssuerURL`** — point the Relying Party at *any* spec-compliant OIDC issuer (Google,
+  Okta, Auth0, Entra, Authentik, Dex, …). Discovery goes directly to the issuer
+  (`<IssuerURL>/.well-known/openid-configuration`). When set, `KeycloakURL`/`Realm` are ignored.
+- **`Config.discoveryURL()`** semantics: exactly one discovery source is required — `IssuerURL`, or
+  the Keycloak convenience path (`KeycloakURL` + `Realm`). `validate()` now requires the Keycloak
+  fields only when `IssuerURL` is empty; the client/session fields are always required.
+- Tests: generic-issuer discovery (non-`/realms/` issuer), config-validation matrix for the two
+  discovery sources, and an explicit non-Keycloak (`realm_access`-absent) realm-roles case.
+
+### Changed
+
+- Public release hygiene: added `LICENSE` (Apache-2.0), `SECURITY.md`, `CONTRIBUTING.md`, and CI
+  (`go test -race` + `golangci-lint` + `govulncheck`). README rewritten generic-first. `go.mod`
+  pinned to `go 1.25` (dependency floor: `coreos/go-oidc/v3` and `golang.org/x/oauth2` require 1.25).
+
 ## v0.15.1 — 2026-07-05
 
 `DC-AUTO-2` (aigentflow) — **`IssueSession` now persists `Memberships` and `RealmRoles`.**

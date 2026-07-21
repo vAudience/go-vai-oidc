@@ -12,11 +12,28 @@ import (
 // Config holds the configuration for OIDC authentication.
 // Required fields must be set; optional fields have sensible defaults applied by New().
 type Config struct {
-	// Required: Keycloak connection.
+	// Generic OIDC issuer (any spec-compliant provider).
+	//
+	// When set, discovery is performed directly against this issuer URL
+	// (go-oidc appends "/.well-known/openid-configuration"), and
+	// KeycloakURL/Realm are ignored. Use this for Google, Okta, Auth0,
+	// Entra, Authentik, Dex, or any spec-compliant OIDC provider — e.g.
+	// "https://accounts.google.com" or "https://auth.example.com/realms/acme".
+	//
+	// Leave empty to use the Keycloak convenience path (KeycloakURL +
+	// Realm), which composes the issuer as "<KeycloakURL>/realms/<Realm>".
+	// Exactly one of {IssuerURL} or {KeycloakURL + Realm} must be set.
+	//
+	// Distinct from IssuerURLOverride: IssuerURL is WHERE discovery
+	// fetches from; IssuerURLOverride only changes WHICH issuer-claim
+	// value is accepted (the split-horizon cluster-internal case).
+	IssuerURL string
+
+	// Required (Keycloak convenience path — omit when IssuerURL is set).
 	KeycloakURL  string // Base URL, e.g. "https://keycloak.example.com"
-	Realm        string // Realm name, e.g. "vaudience"
-	ClientID     string // OIDC client ID registered in Keycloak
-	ClientSecret string // OIDC client secret from K8s secret
+	Realm        string // Realm name, e.g. "acme"
+	ClientID     string // OIDC client ID registered with the provider
+	ClientSecret string // OIDC client secret
 
 	// Required: Service endpoints.
 	CallbackURL string // Full callback URL, e.g. "https://myapp.example.com/auth/callback"
@@ -78,8 +95,8 @@ type Config struct {
 	// into the consumer service.
 	//
 	// For Google Workspace tenants, set this to your primary domain
-	// (e.g. "vaudience.ai"). For non-Google IdPs the same `email`-claim
-	// rule applies — vai-oidc does not consult Google's `hd` claim
+	// (e.g. "example.com"). For non-Google IdPs the same `email`-claim
+	// rule applies — go-vai-oidc does not consult Google's `hd` claim
 	// because IdP-portability matters more than tightening the check
 	// against one provider.
 	//
@@ -154,6 +171,17 @@ func (c *Config) secureCookie() bool {
 	return !c.InsecureCookie
 }
 
+// discoveryURL returns the OIDC issuer/discovery URL: the explicit generic
+// IssuerURL when set, otherwise the Keycloak convenience composition
+// (KeycloakURL + "/realms/" + Realm). go-oidc appends
+// "/.well-known/openid-configuration" to the returned value.
+func (c *Config) discoveryURL() string {
+	if c.IssuerURL != "" {
+		return c.IssuerURL
+	}
+	return fmt.Sprintf(keycloakIssuerTemplate, c.KeycloakURL, c.Realm)
+}
+
 // applyDefaults fills zero-value optional fields with sensible defaults.
 func (c *Config) applyDefaults() {
 	if c.LogoutRedirect == "" {
@@ -193,17 +221,24 @@ func (c *Config) applyDefaults() {
 // validate checks that all required fields are set and the session secret is valid.
 // Returns a descriptive error wrapping ErrInvalidConfig or ErrSessionKeyInvalid.
 func (c *Config) validate() ([]byte, error) {
-	// Required string fields.
-	for _, check := range []struct {
-		value, name string
-	}{
-		{c.KeycloakURL, "KeycloakURL"},
-		{c.Realm, "Realm"},
+	// Required string fields. The discovery source is either the generic
+	// IssuerURL or the Keycloak convenience path (KeycloakURL + Realm):
+	// when IssuerURL is empty, both Keycloak parts are required. The
+	// remaining fields are always required.
+	type reqField struct{ value, name string }
+	required := []reqField{
 		{c.ClientID, "ClientID"},
 		{c.ClientSecret, "ClientSecret"},
 		{c.CallbackURL, "CallbackURL"},
 		{c.SessionSecret, "SessionSecret"},
-	} {
+	}
+	if c.IssuerURL == "" {
+		required = append(required,
+			reqField{c.KeycloakURL, "KeycloakURL (or set IssuerURL)"},
+			reqField{c.Realm, "Realm (or set IssuerURL)"},
+		)
+	}
+	for _, check := range required {
 		if check.value == "" {
 			return nil, fmt.Errorf("%s is required: %w", check.name, ErrInvalidConfig)
 		}

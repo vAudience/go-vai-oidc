@@ -42,14 +42,14 @@ func New(ctx context.Context, cfg Config) (*Auth, error) {
 	// `Config.DiscoveryRetryBudget = -1` (or any negative) to opt out
 	// and preserve the pre-v0.8.0 single-shot semantics.
 	provider, err := discoverWithRetry(ctx, cfg.Logger, cfg.DiscoveryRetryBudget,
-		cfg.KeycloakURL, cfg.Realm, cfg.ClientID, cfg.ClientSecret, cfg.CallbackURL, cfg.IssuerURLOverride, cfg.Scopes)
+		cfg.discoveryURL(), cfg.ClientID, cfg.ClientSecret, cfg.CallbackURL, cfg.IssuerURLOverride, cfg.Scopes)
 	if err != nil {
 		return nil, err // discover() already wraps with ErrDiscoveryFailed
 	}
 
-	cfg.Logger.Info("vai-oidc initialized",
+	cfg.Logger.Info("go-vai-oidc initialized",
 		slog.String(logKeyComponent, logComponent),
-		slog.String(logKeyIssuer, fmt.Sprintf(keycloakIssuerTemplate, cfg.KeycloakURL, cfg.Realm)),
+		slog.String(logKeyIssuer, cfg.discoveryURL()),
 		slog.String(logKeyClientID, cfg.ClientID),
 	)
 

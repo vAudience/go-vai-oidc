@@ -22,22 +22,22 @@ import (
 
 // Test constants — no magic strings.
 const (
-	testRealm        = "test-realm"
-	testClientID     = "test-client"
-	testCallback     = "/cb"
-	testKID          = "test-kid-1"
-	testIssuerPath   = "/realms/" + testRealm
-	jwksAlgRS256     = "RS256"
-	jwksUse          = "sig"
-	jwksKty          = "RSA"
-	jwksHeaderType   = "JWT"
-	wellKnownPath    = "/.well-known/openid-configuration"
-	jwksRoutePath    = "/protocol/openid-connect/certs"
-	testSub          = "user-sub-abc"
-	testEmail        = "alice@example.com"
-	testName         = "Alice Example"
-	testExtraClaim   = "preferred_username"
-	testExtraValue   = "alice"
+	testRealm          = "test-realm"
+	testClientID       = "test-client"
+	testCallback       = "/cb"
+	testKID            = "test-kid-1"
+	testIssuerPath     = "/realms/" + testRealm
+	jwksAlgRS256       = "RS256"
+	jwksUse            = "sig"
+	jwksKty            = "RSA"
+	jwksHeaderType     = "JWT"
+	wellKnownPath      = "/.well-known/openid-configuration"
+	jwksRoutePath      = "/protocol/openid-connect/certs"
+	testSub            = "user-sub-abc"
+	testEmail          = "alice@example.com"
+	testName           = "Alice Example"
+	testExtraClaim     = "preferred_username"
+	testExtraValue     = "alice"
 	verifyTestTokenTTL = 5 * time.Minute
 )
 
@@ -56,7 +56,7 @@ func newTestKeycloak(t *testing.T) (*httptest.Server, *rsa.PrivateKey) {
 
 	mux.HandleFunc(testIssuerPath+wellKnownPath, func(w http.ResponseWriter, r *http.Request) {
 		base := srv.URL + testIssuerPath
-		fmt.Fprintf(w, validDiscoveryDocTemplate, base, base, base, base, base, base)
+		_, _ = fmt.Fprintf(w, validDiscoveryDocTemplate, base, base, base, base, base, base)
 	})
 
 	mux.HandleFunc(testIssuerPath+jwksRoutePath, func(w http.ResponseWriter, r *http.Request) {

@@ -24,14 +24,14 @@ func ExampleUserFromContext() {
 	req := httptest.NewRequest("GET", "/dashboard", nil)
 	req = testAuth.SetTestUser(req, &vaioidc.User{
 		Sub:   "user-123",
-		Email: "toni@vaudience.ai",
-		Name:  "Toni",
+		Email: "alice@example.com",
+		Name:  "Alice",
 		OrgID: "00000000-0000-0000-0000-000000000000",
 	})
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
-	// Output: Hello, Toni (toni@vaudience.ai) org=00000000-0000-0000-0000-000000000000
+	// Output: Hello, Alice (alice@example.com) org=00000000-0000-0000-0000-000000000000
 }
 
 func ExampleAuth_Routes() {
@@ -57,8 +57,8 @@ func ExampleTestAuth_TestSessionCookie() {
 
 	user := &vaioidc.User{
 		Sub:   "test-user",
-		Email: "dev@vaudience.ai",
-		Name:  "Dev",
+		Email: "alice@example.com",
+		Name:  "Alice",
 		OrgID: "00000000-0000-0000-0000-000000000000",
 		Claims: map[string]string{
 			"department": "engineering",
@@ -79,5 +79,5 @@ func ExampleTestAuth_TestSessionCookie() {
 	handler.ServeHTTP(w, req)
 
 	fmt.Printf("%s (%s) org=%s dept=%s\n", captured.Name, captured.Email, captured.OrgID, captured.Claims["department"])
-	// Output: Dev (dev@vaudience.ai) org=00000000-0000-0000-0000-000000000000 dept=engineering
+	// Output: Alice (alice@example.com) org=00000000-0000-0000-0000-000000000000 dept=engineering
 }

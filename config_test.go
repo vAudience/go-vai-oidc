@@ -62,7 +62,7 @@ func TestConfig_Validate_Success(t *testing.T) {
 
 func TestConfig_Validate_MissingRequired(t *testing.T) {
 	tests := []struct {
-		name  string
+		name   string
 		mutate func(*Config)
 	}{
 		{"KeycloakURL", func(c *Config) { c.KeycloakURL = "" }},
@@ -83,6 +83,60 @@ func TestConfig_Validate_MissingRequired(t *testing.T) {
 			assert.True(t, errors.Is(err, ErrInvalidConfig))
 		})
 	}
+}
+
+func TestConfig_Validate_GenericIssuerURL(t *testing.T) {
+	// With IssuerURL set, KeycloakURL and Realm are NOT required — a
+	// generic-IdP self-hoster must not be forced to invent a realm.
+	cfg := validConfig()
+	cfg.applyDefaults()
+	cfg.IssuerURL = "https://accounts.google.com"
+	cfg.KeycloakURL = ""
+	cfg.Realm = ""
+	key, err := cfg.validate()
+	require.NoError(t, err, "IssuerURL should satisfy the discovery-source requirement")
+	assert.Len(t, key, aesKeyLength)
+}
+
+func TestConfig_Validate_NoDiscoverySource(t *testing.T) {
+	// Neither IssuerURL nor KeycloakURL+Realm → error.
+	cfg := validConfig()
+	cfg.applyDefaults()
+	cfg.IssuerURL = ""
+	cfg.KeycloakURL = ""
+	cfg.Realm = ""
+	_, err := cfg.validate()
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrInvalidConfig))
+}
+
+func TestConfig_Validate_GenericIssuerStillNeedsClientFields(t *testing.T) {
+	// Client/session fields are always required, independent of the
+	// discovery source: IssuerURL set but ClientID missing → still fails.
+	cfg := validConfig()
+	cfg.applyDefaults()
+	cfg.IssuerURL = "https://accounts.google.com"
+	cfg.KeycloakURL = ""
+	cfg.Realm = ""
+	cfg.ClientID = ""
+	_, err := cfg.validate()
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrInvalidConfig))
+}
+
+func TestConfig_DiscoveryURL(t *testing.T) {
+	t.Run("generic IssuerURL wins", func(t *testing.T) {
+		cfg := Config{
+			IssuerURL:   "https://accounts.google.com",
+			KeycloakURL: "https://kc.example.com",
+			Realm:       "acme",
+		}
+		assert.Equal(t, "https://accounts.google.com", cfg.discoveryURL())
+	})
+	t.Run("Keycloak convenience composition", func(t *testing.T) {
+		cfg := Config{KeycloakURL: "https://kc.example.com", Realm: "acme"}
+		assert.Equal(t, "https://kc.example.com/realms/acme", cfg.discoveryURL())
+	})
 }
 
 func TestConfig_Validate_BadBase64Secret(t *testing.T) {

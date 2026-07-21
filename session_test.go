@@ -26,7 +26,7 @@ func TestEncryptDecrypt_RoundTrip(t *testing.T) {
 	key := testKey(t)
 	payload := &sessionPayload{
 		Sub:     "user-123",
-		Email:   "test@vaudience.ai",
+		Email:   "test@example.com",
 		Name:    "Test User",
 		IDToken: "eyJhbGciOiJSUzI1NiJ9.test.signature",
 		Exp:     time.Now().UTC().Add(time.Hour).Unix(),
@@ -214,7 +214,7 @@ func TestEncryptDecrypt_RoundTrip_WithMemberships(t *testing.T) {
 	key := testKey(t)
 	payload := &sessionPayload{
 		Sub:   "user-mbs",
-		Email: "m@vaudience.ai",
+		Email: "m@example.com",
 		OrgID: "org-alpha",
 		Mbs: []Membership{
 			{OrgID: "org-alpha", OrgName: "Alpha", OrgSlug: "alpha", Role: "owner"},
@@ -253,7 +253,7 @@ func TestCallbackPayloadConstruction_PersistsMemberships(t *testing.T) {
 
 	resolvedUser := &User{
 		Sub:   "multi-org-user",
-		Email: "multi@vaudience.ai",
+		Email: "multi@example.com",
 		Name:  "Multi Org",
 		OrgID: "org-alpha", // resolver's default pick (memberships[0])
 		Memberships: []Membership{
@@ -313,7 +313,7 @@ func TestIssueSession_PersistsMembershipsAndRealmRoles(t *testing.T) {
 
 	user := &User{
 		Sub:   "inline-login-user",
-		Email: "inline@vaudience.ai",
+		Email: "inline@example.com",
 		Name:  "Inline Login",
 		OrgID: "org-alpha",
 		Memberships: []Membership{
@@ -355,7 +355,7 @@ func TestEncryptDecrypt_RoundTrip_WithOrgIDAndClaims(t *testing.T) {
 	key := testKey(t)
 	payload := &sessionPayload{
 		Sub:     "user-456",
-		Email:   "test@vaudience.ai",
+		Email:   "test@example.com",
 		Name:    "Test",
 		OrgID:   "00000000-0000-0000-0000-000000000000",
 		Claims:  map[string]string{"tenant": "acme", "role": "admin"},
@@ -536,8 +536,8 @@ func TestEncryptSession_CookieSizeReasonable(t *testing.T) {
 	idToken := base64.RawURLEncoding.EncodeToString(make([]byte, 800))
 	payload := &sessionPayload{
 		Sub:     "08cfe0c0-049c-4cb5-b2ff-022bbf80b915",
-		Email:   "toni.wagner@vaudience.ai",
-		Name:    "Toni Wagner",
+		Email:   "alice.example@example.com",
+		Name:    "Alice Example",
 		IDToken: idToken,
 		Exp:     time.Now().UTC().Add(24 * time.Hour).Unix(),
 	}

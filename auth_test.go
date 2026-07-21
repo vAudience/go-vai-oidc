@@ -74,9 +74,9 @@ func TestIsValidRedirect(t *testing.T) {
 		{"//evil.com", false},
 		{"http://evil.com/path", false},
 		{"javascript:alert(1)", false},
-		{"dashboard", false},       // no leading /
-		{"/\\evil.com", false},     // backslash — browser normalization attack
-		{"/path\\other", false},    // backslash in path
+		{"dashboard", false},    // no leading /
+		{"/\\evil.com", false},  // backslash — browser normalization attack
+		{"/path\\other", false}, // backslash in path
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
@@ -717,4 +717,3 @@ func noopLogger() *slog.Logger {
 type discard struct{}
 
 func (discard) Write(p []byte) (int, error) { return len(p), nil }
-

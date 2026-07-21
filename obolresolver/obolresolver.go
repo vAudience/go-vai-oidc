@@ -1,18 +1,18 @@
-// Package obolresolver implements the canonical vai-oidc UserResolver
-// for vAudience.AI services that delegate identity-to-org resolution
-// to obol's `POST /api/v1/identity/ensure` endpoint.
+// Package obolresolver is a reference go-vai-oidc UserResolver adapter
+// for vAudience.AI services that delegate identity-to-org resolution to
+// the Obol billing service's `POST /api/v1/identity/ensure` endpoint.
 //
-// Auth-platform-spec.md §5 documents the contract end-to-end. This
-// package replaces the per-consumer `NewDefaultOrgResolver` MVP shape
-// (folios DC-AUTH-02, skope DC-AUTH-03, aigentflow DC-AUTH-04) with
-// the production resolver from DC-AUTH-05 onward.
+// It is an optional, vendor-specific example of the generic
+// go-vai-oidc UserResolver seam: generic consumers do not need it (Go
+// tree-shakes it out; it adds no dependency to the root package). Use
+// it as a template for your own resolver, or ignore it entirely.
 //
 // Wire shape:
 //
 //	import "github.com/vAudience/go-vai-oidc/obolresolver"
 //
 //	cfg.UserResolver = obolresolver.New(obolresolver.Config{
-//	    BaseURL: os.Getenv("FOL_OBOL_URL"),
+//	    BaseURL: os.Getenv("OBOL_URL"),
 //	    Client:  charonClient,
 //	})
 //
@@ -47,9 +47,9 @@ type HTTPClient interface {
 
 // Config carries the per-call inputs for a New() invocation.
 type Config struct {
-	// BaseURL is the obol cluster-internal URL, e.g.
-	// "http://obol.vaik8s-vai-base-itsatony-vai-base-app.svc.cluster.local:17350".
-	// The resolver POSTs to BaseURL + "/api/v1/identity/ensure".
+	// BaseURL is the Obol service base URL, e.g.
+	// "http://obol.internal:17350" (typically a cluster-internal
+	// address). The resolver POSTs to BaseURL + "/api/v1/identity/ensure".
 	BaseURL string
 
 	// Client is the HTTP client to use. Production callers pass a

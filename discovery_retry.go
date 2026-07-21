@@ -5,12 +5,11 @@ package vaioidc
 // Wraps the one-shot `discover()` call in `New()` with a jittered
 // exponential-backoff loop bounded by Config.DiscoveryRetryBudget.
 //
-// Closes the failure class observed live on styx 2026-05-12:
-// folios's pod started before keycloak finished its own bootstrap,
-// the single discovery HTTP GET returned "connection refused", the
-// caller logged a WARN and proceeded with app.OIDCAuth=nil, and
-// /auth/login served HTTP 401 for 3+ days until a manual pod
-// restart cleared it.
+// Closes the cold-boot failure class: a consumer pod starts before the
+// OIDC provider has finished its own bootstrap, the single discovery
+// HTTP GET returns "connection refused", the caller logs a WARN and
+// proceeds with a nil Auth, and /auth/login then serves HTTP 401
+// indefinitely until a manual pod restart clears it.
 //
 // Retryable classes:
 //   - Transient HTTP (5xx, 408, 429).
@@ -43,11 +42,11 @@ func discoverWithRetry(
 	ctx context.Context,
 	logger *slog.Logger,
 	budget time.Duration,
-	keycloakURL, realm, clientID, clientSecret, callbackURL, issuerOverride string,
+	discoveryURL, clientID, clientSecret, callbackURL, issuerOverride string,
 	scopes []string,
 ) (*oidcProvider, error) {
 	if budget <= 0 {
-		return discover(ctx, keycloakURL, realm, clientID, clientSecret, callbackURL, issuerOverride, scopes)
+		return discover(ctx, discoveryURL, clientID, clientSecret, callbackURL, issuerOverride, scopes)
 	}
 
 	started := time.Now()
@@ -72,7 +71,7 @@ func discoverWithRetry(
 			perAttempt = remaining
 		}
 		attemptCtx, cancel := context.WithTimeout(ctx, perAttempt)
-		prov, err := discover(attemptCtx, keycloakURL, realm, clientID, clientSecret, callbackURL, issuerOverride, scopes)
+		prov, err := discover(attemptCtx, discoveryURL, clientID, clientSecret, callbackURL, issuerOverride, scopes)
 		cancel()
 		attempt++
 
