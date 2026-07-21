@@ -10,6 +10,10 @@ import (
 // check (returns nil). Comparison is case-insensitive; the caller
 // is expected to have lowercased requiredDomain via applyDefaults().
 //
+// This is a DOMAIN match only — it deliberately does not inspect the
+// email_verified claim, so a consumer that needs verification as a
+// trust boundary must enforce it separately (see SECURITY.md).
+//
 // Returns ErrEmailClaimMissing when the gate is active and the
 // email claim is empty or has no `@` separator. Returns
 // ErrEmailDomainMismatch when the parsed domain does not equal

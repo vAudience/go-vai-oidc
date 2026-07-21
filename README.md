@@ -197,13 +197,19 @@ vaioidc.Config{
 
 They are distinct:
 
-- **`IssuerURL`** is *where discovery fetches from* — the provider's issuer.
-- **`IssuerURLOverride`** changes *which `iss` value is accepted*. Use it for the split-horizon
-  Kubernetes case: the pod performs discovery over a cluster-internal URL (e.g.
-  `http://keycloak.<ns>.svc.cluster.local:8080`) while the provider issues tokens with its public
-  issuer URL. Set the override to the public issuer so ID-token `iss` verification passes. This is a
-  legitimate deployment topology, not a security relaxation — the internal URL is just a different
-  network path to the same provider and the same signing keys.
+- **`IssuerURL`** is *where discovery fetches from* — the provider's issuer. It must equal the
+  provider's own `iss` value: `go-oidc` verifies that the discovery document's `issuer` matches the
+  URL discovery was fetched from (byte-for-byte; a trailing slash is trimmed for you). Providers
+  whose `iss` differs from their discovery base — a tenant-templated issuer (e.g. some Entra
+  configurations), or a split-horizon deployment — will fail discovery unless you set
+  `IssuerURLOverride`.
+- **`IssuerURLOverride`** changes *which `iss` value is accepted* — the escape hatch for any
+  discovery-URL vs `iss` mismatch. The canonical case is split-horizon Kubernetes: the pod performs
+  discovery over a cluster-internal URL (e.g. `http://keycloak.<ns>.svc.cluster.local:8080`) while
+  the provider issues tokens with its public issuer URL. Set the override to the public issuer so
+  ID-token `iss` verification passes. This is a legitimate deployment topology, not a security
+  relaxation — the internal URL is just a different network path to the same provider and the same
+  signing keys.
 
 ## Bypassing your own middleware on the auth routes
 

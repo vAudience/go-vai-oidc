@@ -64,7 +64,7 @@ const (
 // which setSessionCookie splits the session across multiple cookies and logs a
 // warning. Browsers cap a single cookie at ~4096 bytes; retaining Keycloak
 // access+refresh tokens (Config.RetainTokens) can exceed that. The threshold
-// leaves headroom for the cookie name + attributes. DC-APIKEY-03 (v0.12.0).
+// leaves headroom for the cookie name + attributes (v0.12.0).
 const CookieSizeWarnThreshold = 3500
 
 // Session cookie chunking (v0.13.0). Config.RetainTokens can push the encrypted
@@ -109,7 +109,7 @@ const (
 )
 
 // Log component.
-const logComponent = "vai-oidc"
+const logComponent = "go-vai-oidc"
 
 // Log keys.
 const (
@@ -128,14 +128,14 @@ const (
 	logKeyCookieChunks   = "cookie_chunks"
 )
 
-// Token-retention log messages (DC-APIKEY-03, v0.12.0).
+// Token-retention log messages (v0.12.0).
 const (
-	logMsgCookieLarge      = "vai-oidc: session exceeds the single-cookie limit; split across chunked cookies"
-	logMsgTokenRefreshed   = "vai-oidc: refreshed Keycloak access token"
-	logMsgTokenPersistFail = "vai-oidc: failed to persist refreshed tokens (returning valid token anyway)"
+	logMsgCookieLarge      = "go-vai-oidc: session exceeds the single-cookie limit; split across chunked cookies"
+	logMsgTokenRefreshed   = "go-vai-oidc: refreshed access token"
+	logMsgTokenPersistFail = "go-vai-oidc: failed to persist refreshed tokens (returning valid token anyway)"
 )
 
-// Discovery retry (DC-OIDC-RETRY-01, v0.8.0).
+// Discovery retry (v0.8.0).
 const (
 	// DiscoveryRetryBudgetDefault is the default wall-clock budget
 	// New() spends retrying transient OIDC discovery failures
@@ -161,8 +161,8 @@ const (
 	logKeyDiscoveryAttempt = "attempt"
 	logKeyDiscoveryElapsed = "elapsed"
 	logKeyDiscoveryBackoff = "next_backoff"
-	logMsgDiscoveryRetry   = "vai-oidc: discovery retry attempt"
-	logMsgDiscoverySuccess = "vai-oidc: discovery succeeded after retry"
+	logMsgDiscoveryRetry   = "go-vai-oidc: discovery retry attempt"
+	logMsgDiscoverySuccess = "go-vai-oidc: discovery succeeded after retry"
 )
 
 // Email-domain gate.

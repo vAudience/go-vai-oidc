@@ -1,0 +1,19 @@
+# golangci-lint v2 configuration.
+# Pinned in CI (.github/workflows/ci.yml) so local and CI results match exactly.
+#
+# We run the curated `standard` set (errcheck, govet, ineffassign, staticcheck,
+# unused) plus gofmt. It is deliberately conservative: a library on the auth path
+# should have a deterministic, low-false-positive gate that every contributor can
+# reproduce with `golangci-lint run`, not a maximal linter set that needs a scatter
+# of per-line //nolint directives to stay green.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+
+formatters:
+  enable:
+    - gofmt

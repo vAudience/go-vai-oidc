@@ -1,6 +1,6 @@
 package vaioidc
 
-// discovery_retry_test.go — DC-OIDC-RETRY-01 (v0.8.0) unit tests.
+// discovery_retry_test.go — jittered discovery retry (v0.8.0) unit tests.
 
 import (
 	"context"

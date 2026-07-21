@@ -9,7 +9,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// enforceEmailDomain — pure-function gate tests (DC-AUTH-07).
+// enforceEmailDomain — pure-function gate tests.
 //
 // Tests the gate without spinning a Keycloak fake. The gate runs
 // AFTER claim extraction, so the unit under test takes a *User
@@ -118,7 +118,7 @@ func TestDomainReason_Mapping(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Config-side validation tests (DC-AUTH-07).
+// Config-side validation tests.
 // ---------------------------------------------------------------------------
 
 func TestConfig_RequireEmailDomain_LowercasedByApplyDefaults(t *testing.T) {

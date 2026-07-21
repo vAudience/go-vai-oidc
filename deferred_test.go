@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// DC-OIDC-READINESS-01 — NewBackground contract.
+// NewBackground contract.
 
 func mockDiscoveryServer(t *testing.T, status int, body string) *httptest.Server {
 	t.Helper()

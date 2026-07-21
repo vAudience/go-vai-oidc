@@ -13,7 +13,7 @@
 //	    ClientSecret:  cfg.OIDC.ClientSecret,
 //	    CallbackURL:   cfg.OIDC.CallbackURL,
 //	    SessionSecret: cfg.OIDC.SessionSecret, // base64-encoded 32 bytes
-//	    UserResolver:  myObolResolver,          // resolves user.OrgID via Obol
+//	    UserResolver:  myUserResolver,          // resolves user.OrgID via your backend
 //	})
 //	if err != nil {
 //	    log.Fatal(err)
@@ -29,9 +29,14 @@
 //	fmt.Println(user.Email, user.OrgID)
 //
 // Email-domain gate (v0.7.0+): set Config.RequireEmailDomain to a
-// bare domain (e.g. "example.com") to reject logins whose verified
-// id_token email-claim domain does not match. Comparison is
-// case-insensitive; the gate runs before UserResolver. Empty value
-// (the default) disables the check. Intended as belt-and-braces on
-// top of the realm-side IdP flow (e.g. a Google-only browser flow).
+// bare domain (e.g. "example.com") to reject logins whose id_token
+// email-claim domain does not match. Comparison is case-insensitive;
+// the gate runs before UserResolver. Empty value (the default)
+// disables the check.
+//
+// This gate checks the email DOMAIN only — it does NOT inspect the
+// email_verified claim, so it is not, by itself, a trust boundary on a
+// multi-tenant IdP where a user might hold an unverified address in the
+// target domain. Enforce email_verified in your UserResolver (or at the
+// IdP) if you need that guarantee. See SECURITY.md.
 package vaioidc

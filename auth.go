@@ -36,7 +36,16 @@ func New(ctx context.Context, cfg Config) (*Auth, error) {
 		return nil, err
 	}
 
-	// DC-OIDC-RETRY-01 (v0.8.0): wrap discover() in a jittered retry
+	// Both discovery sources populated is a config smell: IssuerURL wins and the
+	// Keycloak convenience fields are silently ignored (see Config.discoveryURL).
+	// Warn loudly rather than authenticate against a provider the operator may
+	// not have intended.
+	if cfg.IssuerURL != "" && (cfg.KeycloakURL != "" || cfg.Realm != "") {
+		cfg.Logger.Warn("both IssuerURL and KeycloakURL/Realm are set; IssuerURL wins and the Keycloak fields are ignored",
+			slog.String(logKeyComponent, logComponent))
+	}
+
+	// v0.8.0: wrap discover() in a jittered retry
 	// budget so a cold-boot keycloak-not-yet-reachable race no longer
 	// produces a permanently-broken consumer pod. Set
 	// `Config.DiscoveryRetryBudget = -1` (or any negative) to opt out
@@ -225,7 +234,7 @@ func (a *Auth) IssueSession(w http.ResponseWriter, r *http.Request, user *User, 
 
 // AccessToken returns a currently-valid Keycloak access token for the
 // logged-in user, refreshing it transparently via the stored refresh token
-// when it has expired. v0.12.0+ (DC-APIKEY-03).
+// when it has expired. v0.12.0+.
 //
 // Requires Config.RetainTokens=true AND a session created after retention was
 // enabled; otherwise returns ErrTokensNotRetained. The returned token is the
@@ -440,7 +449,7 @@ func (a *Auth) handleCallback(w http.ResponseWriter, r *http.Request) {
 	// Extract user claims.
 	user := a.provider.extractUser(idToken, a.logger, a.cfg.ExtraClaims)
 
-	// Email-domain gate (DC-AUTH-07). Runs BEFORE UserResolver so a
+	// Email-domain gate. Runs BEFORE UserResolver so a
 	// custom resolver does not need to know about the rule and so the
 	// rejection log line never carries resolver-side state. Empty
 	// RequireEmailDomain skips the check (existing behaviour).
@@ -503,7 +512,7 @@ func (a *Auth) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	payload.fromUser(user)
 
-	// DC-APIKEY-03: optionally retain the access+refresh tokens so the service
+	// Optionally retain the access+refresh tokens so the service
 	// can later forward a valid Keycloak access token to a downstream API.
 	if a.cfg.RetainTokens && token != nil {
 		payload.AccessToken = token.AccessToken

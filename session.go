@@ -30,7 +30,7 @@ type sessionPayload struct {
 	IDToken string            `json:"idt"`           // raw ID token for Keycloak logout hint
 	Exp     int64             `json:"exp"`           // unix timestamp
 
-	// Token retention (DC-APIKEY-03, v0.12.0). Populated only when
+	// Token retention (v0.12.0). Populated only when
 	// Config.RetainTokens is true; empty otherwise. AccessToken is the raw
 	// Keycloak access token forwardable to downstream APIs; RefreshToken
 	// renews it; AccessTokenExp is the access token's own expiry (unix), which

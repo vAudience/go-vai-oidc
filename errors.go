@@ -40,7 +40,7 @@ var (
 	ErrTokenVerification = errors.New("vai-oidc: ID token verification failed")
 )
 
-// Token-retention errors (DC-APIKEY-03, v0.12.0) — returned by Auth.AccessToken().
+// Token-retention errors (v0.12.0) — returned by Auth.AccessToken().
 var (
 	// ErrTokensNotRetained indicates Auth.AccessToken was called but the
 	// access/refresh tokens are not available: either Config.RetainTokens is

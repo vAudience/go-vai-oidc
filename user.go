@@ -58,7 +58,7 @@ func (u *User) HasRealmRole(role string) bool {
 }
 
 // Membership is one organization the authenticated user belongs to, as resolved
-// by a UserResolver. Mirrors Obol's per-membership /identity/ensure row.
+// by a UserResolver. Mirrors an upstream directory's per-membership row.
 // Added in v0.14.0 to let consumers render an org picker for multi-org users
 // instead of silently inheriting the first membership.
 type Membership struct {

@@ -1,6 +1,6 @@
 package vaioidc
 
-// discovery_retry.go — DC-OIDC-RETRY-01 (v0.8.0).
+// discovery_retry.go — jittered discovery retry (v0.8.0).
 //
 // Wraps the one-shot `discover()` call in `New()` with a jittered
 // exponential-backoff loop bounded by Config.DiscoveryRetryBudget.

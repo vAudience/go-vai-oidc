@@ -5,7 +5,9 @@ sits on the authentication path of its consumers, we take security reports serio
 
 ## Supported Versions
 
-This library is pre-release; there is no long-term-support (LTS) branch yet.
+This library is pre-1.0 (`0.x`). Under semantic versioning a `0.x` minor bump
+carries **no backward-compatibility guarantee**, so pin an exact tag
+(`go get github.com/vAudience/go-vai-oidc@v0.16.0`) and upgrade deliberately.
 
 | Version   | Security fixes |
 | --------- | -------------- |
@@ -42,3 +44,12 @@ The following are the **consumer's** responsibility and out of scope for this li
 - Generation, storage, and rotation of the session-encryption secret.
 - Correct configuration of the issuer URL, callback/redirect URIs, and client credentials.
 - Transport security (TLS) and secure cookie attributes at the deployment boundary.
+
+### `Config.RequireEmailDomain` is a domain filter, not a verification check
+
+The optional email-domain gate matches the `email` claim's **domain** only — it
+does **not** inspect `email_verified`. On a multi-tenant IdP where a user could
+hold an unverified address in the target domain, do not treat this gate as a
+trust boundary. If you need verified-email enforcement, assert `email_verified`
+in your `UserResolver` (add it to `Config.ExtraClaims` and check it) or enforce
+it at the IdP.

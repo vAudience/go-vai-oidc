@@ -24,9 +24,17 @@ type Config struct {
 	// Realm), which composes the issuer as "<KeycloakURL>/realms/<Realm>".
 	// Exactly one of {IssuerURL} or {KeycloakURL + Realm} must be set.
 	//
+	// IssuerURL must equal the provider's own `iss` value exactly:
+	// go-oidc verifies that the discovery document's `issuer` matches
+	// the URL discovery was fetched from (byte-for-byte, trailing slash
+	// aside — which this library trims). Providers whose `iss` differs
+	// from their discovery base (e.g. a tenant-templated issuer, or a
+	// split-horizon deployment) must set IssuerURLOverride to the
+	// canonical `iss`.
+	//
 	// Distinct from IssuerURLOverride: IssuerURL is WHERE discovery
 	// fetches from; IssuerURLOverride only changes WHICH issuer-claim
-	// value is accepted (the split-horizon cluster-internal case).
+	// value is accepted (the split-horizon / iss-mismatch case).
 	IssuerURL string
 
 	// Required (Keycloak convenience path — omit when IssuerURL is set).
@@ -58,7 +66,7 @@ type Config struct {
 	ExtraClaims  []string     // Extra ID token claim names to extract into User.Claims
 	UserResolver UserResolver // Called during OIDC callback to enrich user (resolve org, etc.)
 
-	// Optional: Token retention (DC-APIKEY-03, v0.12.0).
+	// Optional: Token retention (v0.12.0).
 	//
 	// When true, the OIDC callback also stores the user's Keycloak
 	// access_token + refresh_token + access-token expiry in the encrypted
@@ -89,7 +97,7 @@ type Config struct {
 	//
 	// Validated at New(): non-empty values must contain no `@` and no
 	// whitespace. The realm-side flow is the primary IdP gate (e.g. a
-	// `vaisite-google-only` browser flow constraining the upstream IdP
+	// `google-only` browser flow constraining the upstream IdP
 	// to Google); this field is the in-app belt-and-braces check that
 	// keeps a misconfigured realm from federating arbitrary identities
 	// into the consumer service.
@@ -108,7 +116,7 @@ type Config struct {
 
 	// Optional: Discovery retry budget.
 	//
-	// DC-OIDC-RETRY-01 (v0.8.0). When non-zero, `New()` wraps the
+	// Jittered discovery retry (v0.8.0). When non-zero, `New()` wraps the
 	// initial OIDC discovery call in a jittered exponential-backoff
 	// loop bounded by this wall-clock budget. Permanent-class errors
 	// (4xx other than 408/429, malformed JSON) short-circuit
@@ -124,8 +132,8 @@ type Config struct {
 	// the single discovery call gets "connection refused", and the
 	// consumer locks in an `app.OIDCAuth = nil` state forever (until
 	// a manual pod restart). 90s is generous enough to absorb
-	// keycloak boot times on a fresh microk8s and matches the same
-	// retry budget shape used in the DC-OBOL-FAILOPEN-01 family.
+	// keycloak boot times on a fresh cluster and matches the same
+	// retry budget shape used elsewhere for fail-open dependencies.
 	DiscoveryRetryBudget time.Duration
 
 	// Optional: Issuer URL override.
@@ -175,9 +183,14 @@ func (c *Config) secureCookie() bool {
 // IssuerURL when set, otherwise the Keycloak convenience composition
 // (KeycloakURL + "/realms/" + Realm). go-oidc appends
 // "/.well-known/openid-configuration" to the returned value.
+//
+// A trailing slash on IssuerURL is trimmed: go-oidc compares the returned
+// value against the discovery document's `issuer`, and most providers publish
+// an `iss` with no trailing slash — leaving one on would both double the path
+// separator on the discovery fetch and cause a spurious iss mismatch.
 func (c *Config) discoveryURL() string {
 	if c.IssuerURL != "" {
-		return c.IssuerURL
+		return strings.TrimRight(c.IssuerURL, "/")
 	}
 	return fmt.Sprintf(keycloakIssuerTemplate, c.KeycloakURL, c.Realm)
 }
@@ -205,7 +218,7 @@ func (c *Config) applyDefaults() {
 	if c.Logger == nil {
 		c.Logger = slog.Default()
 	}
-	// DC-OIDC-RETRY-01: zero-value opts in to the default 90s budget.
+	// Discovery retry: zero-value opts in to the default 90s budget.
 	// Set explicitly to a negative value to disable retries entirely
 	// (we treat <=0 as disabled at the call site).
 	if c.DiscoveryRetryBudget == 0 {

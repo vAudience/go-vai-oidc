@@ -1,6 +1,6 @@
 package vaioidc
 
-// deferred.go — DC-OIDC-READINESS-01 Layer B
+// deferred.go — background (deferred-discovery) constructor (Layer B)
 //
 // NewBackground returns immediately with a DeferredAuth handle and
 // performs OIDC discovery on a goroutine. Consumers can serve
