@@ -1,5 +1,55 @@
 # Changelog
 
+## v0.17.0 — 2026-08-21
+
+**A session user carries the teams it belongs to.** Fully additive and backward-compatible:
+a resolver that supplies no teams leaves every new field nil and existing consumers are
+unaffected. Pays **atlas#248**; needs **obol ≥ 3.114.0**, which emits the field.
+
+### The gap this closes, and why it was not what the record said
+
+⛔ **THREE SHIPPED FEATURES GOVERN NOTHING BECAUSE A DELEGATED IDENTITY ARRIVES WITH NO TEAMS** —
+trove's coffer team narrowing, mediagen's EU-residency team tier, and conduit's ReBaC-via-teams
+all read the forwarded identity's team ids, and nothing upstream of them had any to give.
+
+⚠ **THE RECORDED BLOCKER WAS STALE.** It read as "the source of truth holds no teams, so adding a
+field ships an always-empty one". Measured: obol has a real team subsystem — rows, an active-only
+query, and a per-user read (obol#15, **closed**) — and the identity channel used for API-key/S2S
+resolution has been returning populated team ids all along. What had never been extended was the
+one endpoint the browser-session path actually calls, `/identity/ensure`.
+
+⚠ **AND charonmw ALREADY CARRIES THE FIELD END TO END** — `Identity.TeamIDs`, the `ctx`/`dlg` S2S
+claims, the signer, and the receiver-side extraction. Nothing needed adding to the wire; it has
+had the field and nothing to put in it.
+
+### Added
+
+- **`Membership.TeamIDs`** — the user's active teams within **that** org. ⚠ Teams are per-org and
+  the field sits on the membership for that reason: a multi-org user has a different team set in
+  each org.
+- **`User.TeamIDsForOrg(orgID)`** — the pairing, derived once. ⚠ Its callers build a delegated
+  identity for a downstream service, so a team id paired with the wrong org is **a grant in an org
+  the user did not act in**, not a cosmetic mix-up. Revert-checked against the realistic wrong
+  implementation (return the first membership's teams): that mutation hands org-beta org-alpha's
+  teams and the guard catches it.
+- **`obolresolver`** decodes obol's per-membership `team_ids` and maps it through.
+
+### Compatibility
+
+⚠ **nil IS NOT "this user is in no team".** An older obol emits no key at all and decodes to the
+same nil as a genuinely teamless user; a caller that must tell those apart has to ask the
+directory, not the session. Obol emits the field unconditionally from the release that adds it, so
+the ambiguity is bounded to the version skew. A control test pins that a payload with no `team_ids`
+still resolves.
+
+⚠ **Sessions minted before this release carry no teams until the user logs in again** — the
+resolver runs at session establishment, not per request.
+
+### Fixed
+
+- `versions.yaml` said **0.15.1** on the commit tagged **v0.16.0**. Metadata-only (nothing in Go
+  reads it here), but it is the file the house rules call the single source of version truth.
+
 ## v0.16.0 — 2026-07-21
 
 **Generic OIDC issuer support + first public Apache-2.0 release.** Fully additive and

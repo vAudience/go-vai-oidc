@@ -70,6 +70,42 @@ type Membership struct {
 	OrgSlug string `json:"org_slug,omitempty"`
 	// Role is the user's role within this org (may be empty).
 	Role string `json:"role,omitempty"`
+
+	// TeamIDs are the user's ACTIVE team memberships within THIS org, when the
+	// UserResolver supplies them (obolresolver populates them from obol's
+	// /identity/ensure as of v0.17.0). Nil when the resolver does not set them,
+	// which keeps this purely additive for every existing consumer.
+	//
+	// ⚠ TEAMS ARE PER-ORG, WHICH IS WHY THEY LIVE HERE AND NOT ON User. A multi-org
+	// user has a different team set in each org, and a consumer that reads "the
+	// user's teams" without saying which org would hand org A's delegation org B's
+	// teams. Use User.TeamIDsForOrg rather than reaching into this slice.
+	TeamIDs []string `json:"team_ids,omitempty"`
+}
+
+// TeamIDsForOrg returns the user's active team ids within orgID, or nil when the
+// user has no membership there, the membership carries no teams, or the resolver
+// supplied none.
+//
+// ⚠ IT EXISTS SO THE ORG/TEAM PAIRING IS DERIVED ONCE. The consumers of this are
+// building a delegated identity for a downstream service — atlas stamps the result
+// onto the forwarded identity that charonmw signs into the S2S claim — and a team id
+// paired with the wrong org is a grant in an org the user did not act in. That is a
+// one-line loop every caller would otherwise write for itself.
+//
+// ⚠ nil is NOT "this user is in no team". It is indistinguishable here from a
+// resolver that supplies no teams at all, and a caller that must tell those apart has
+// to ask the directory, not the session.
+func (u *User) TeamIDsForOrg(orgID string) []string {
+	if u == nil || orgID == "" {
+		return nil
+	}
+	for _, m := range u.Memberships {
+		if m.OrgID == orgID {
+			return m.TeamIDs
+		}
+	}
+	return nil
 }
 
 // contextKey is an unexported type for context keys to prevent collisions.

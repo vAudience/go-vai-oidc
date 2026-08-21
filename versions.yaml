@@ -1,4 +1,4 @@
 project:
   name: vai-oidc
-  version: 0.15.1
+  version: 0.17.0
   description: Drop-in OIDC browser login with org resolution for vAI Go services

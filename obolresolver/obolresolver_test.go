@@ -237,3 +237,62 @@ func TestNew_RequestShape(t *testing.T) {
 		t.Errorf("body fields wrong: %+v", req)
 	}
 }
+
+// TestNew_TeamIDsRideEachMembership pins atlas#248's wire half: obol emits a per-org
+// `team_ids` array on every membership row, and the resolver must land each org's teams on
+// THAT org's membership.
+//
+// ⚠ THE MULTI-ORG SHAPE IS THE TEST, NOT DECORATION. A mapping that read the first row's
+// teams, or concatenated every row's, would satisfy a single-org fixture and then hand a
+// downstream service a team id from an org the user was not acting in — which is a grant,
+// not a cosmetic mix-up. The two orgs below carry disjoint team sets for exactly that reason.
+func TestNew_TeamIDsRideEachMembership(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{
+  "data": {
+    "user_id": "user-uuid-1",
+    "memberships": [
+      {"org_id": "org-alpha", "org_name": "Alpha", "role": "owner",  "team_ids": ["team-a1", "team-a2"]},
+      {"org_id": "org-beta",  "org_name": "Beta",  "role": "member", "team_ids": ["team-b1"]}
+    ]
+  }
+}`)
+	}))
+	defer srv.Close()
+
+	r := New(Config{BaseURL: srv.URL, Client: srv.Client()})
+	user, err := r(context.Background(), &vaioidc.User{Sub: "user-uuid-1"})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got := user.TeamIDsForOrg("org-alpha"); len(got) != 2 || got[0] != "team-a1" || got[1] != "team-a2" {
+		t.Errorf("org-alpha teams = %v, want [team-a1 team-a2]", got)
+	}
+	if got := user.TeamIDsForOrg("org-beta"); len(got) != 1 || got[0] != "team-b1" {
+		t.Errorf("org-beta teams = %v, want [team-b1]", got)
+	}
+	if got := user.TeamIDsForOrg("org-gamma"); got != nil {
+		t.Errorf("an org the user is not in must yield nil, got %v", got)
+	}
+}
+
+// TestNew_AbsentTeamIDsStayNil is the compatibility control: an OLDER obol emits no
+// `team_ids` key at all, and that must decode to a nil slice rather than failing the
+// resolve. Every consumer of this library predates the field.
+func TestNew_AbsentTeamIDsStayNil(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":{"user_id":"u1","memberships":[{"org_id":"org-alpha","role":"owner"}]}}`)
+	}))
+	defer srv.Close()
+
+	r := New(Config{BaseURL: srv.URL, Client: srv.Client()})
+	user, err := r(context.Background(), &vaioidc.User{Sub: "u1"})
+	if err != nil {
+		t.Fatalf("resolve against an obol with no team_ids must still succeed: %v", err)
+	}
+	if got := user.TeamIDsForOrg("org-alpha"); got != nil {
+		t.Errorf("absent team_ids must stay nil, got %v", got)
+	}
+}

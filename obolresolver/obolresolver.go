@@ -87,6 +87,12 @@ type IdentityEnsureMembership struct {
 	OrgName string `json:"org_name,omitempty"`
 	OrgSlug string `json:"org_slug,omitempty"`
 	Role    string `json:"role,omitempty"`
+	// TeamIDs are the user's active teams within this org. Obol emits the field
+	// unconditionally (never omitempty) from the release that added it, so an
+	// absent key here means an OLDER obol rather than a user with no teams — the
+	// two decode the same into a nil slice, which is why no consumer may read nil
+	// as an authoritative "no teams".
+	TeamIDs []string `json:"team_ids,omitempty"`
 }
 
 // IdentityEnsureResponse is the shape obol returns from the
@@ -233,6 +239,7 @@ func toVaiMemberships(in []IdentityEnsureMembership) []vaioidc.Membership {
 			OrgName: m.OrgName,
 			OrgSlug: m.OrgSlug,
 			Role:    m.Role,
+			TeamIDs: m.TeamIDs,
 		})
 	}
 	return out
