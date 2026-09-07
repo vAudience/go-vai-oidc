@@ -53,6 +53,26 @@ type Config struct {
 	LogoutRedirect string // Where to redirect after logout (default: "/")
 	LoginPath      string // Full login path for RequireSession redirects (default: "/auth/login")
 
+	// PostLoginRedirect is where a successful login lands when the browser was
+	// not deep-linking anywhere (default: "/").
+	//
+	// ⚠️ SET IT WHENEVER THIS SERVICE'S UI IS NOT AT THE ROOT. Until v0.18.0 this
+	// was a hard-coded "/" with no way to override it, and it was wrong for two
+	// surveyed consumers in two different ways — one served its UI under a prefix
+	// and registered nothing at "/", so **every successful login answered 404**;
+	// the other serves a public marketing site at "/", so every signed-in
+	// administrator landed on the marketing homepage with no error anywhere. The
+	// second is the more dangerous shape, because nothing looks broken.
+	//
+	// It must be a safe relative path (the same rule `?redirect=` obeys). An
+	// invalid value is refused at New() rather than at the end of somebody's
+	// login.
+	//
+	// ⚠️ IT IS NOT A FALLBACK FOR A REFUSED LOGIN — that is LogoutRedirect. This
+	// is the destination for a login that SUCCEEDED and had nowhere in
+	// particular to go.
+	PostLoginRedirect string
+
 	// Optional: Session.
 	SessionTTL     time.Duration // Session cookie lifetime (default: 24h)
 	CookieName     string        // Session cookie name (default: "vai_session")
@@ -197,6 +217,9 @@ func (c *Config) discoveryURL() string {
 
 // applyDefaults fills zero-value optional fields with sensible defaults.
 func (c *Config) applyDefaults() {
+	if c.PostLoginRedirect == "" {
+		c.PostLoginRedirect = defaultPostLoginRedirect
+	}
 	if c.LogoutRedirect == "" {
 		c.LogoutRedirect = defaultLogoutRedirect
 	}
@@ -274,6 +297,20 @@ func (c *Config) validate() ([]byte, error) {
 			return nil, fmt.Errorf("RequireEmailDomain must not contain '@' or whitespace, got %q: %w",
 				c.RequireEmailDomain, ErrInvalidConfig)
 		}
+	}
+
+	// Validate PostLoginRedirect (v0.18.0). It is a value THIS SERVICE configures,
+	// not one the browser supplies, so the check is not about open redirects — it
+	// is about failing at boot rather than at the end of somebody's login. An
+	// absolute URL here would send every successful login to another origin, and
+	// a path that does not start with "/" would resolve relative to /auth/, which
+	// is the shape that produces a 404 nobody can explain.
+	//
+	// ⚠️ applyDefaults() has already substituted "/" for an empty value, so this
+	// only ever rejects a value somebody actually wrote.
+	if !isValidRedirect(c.PostLoginRedirect) {
+		return nil, fmt.Errorf("PostLoginRedirect must be a safe relative path beginning with '/', got %q: %w",
+			c.PostLoginRedirect, ErrInvalidConfig)
 	}
 
 	// Warn on insecure config (http callback without InsecureCookie).

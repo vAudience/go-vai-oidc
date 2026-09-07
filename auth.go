@@ -94,7 +94,26 @@ func (a *Auth) RequireSession() func(http.Handler) http.Handler {
 					slog.String(logKeyReason, unwrapReason(err)),
 				)
 				if wantsBrowser(r) {
-					http.Redirect(w, r, a.cfg.LoginPath, http.StatusFound)
+					// ⚠️ THE DEEP LINK IS CARRIED, AND BEFORE v0.18.0 IT WAS SILENTLY
+					// DISCARDED HERE. This refusal is the ONLY place a signed-out
+					// browser request to a gated page is turned into a login, so a
+					// static LoginPath meant every deep link — a shared admin URL, a
+					// bookmarked report, a link in a ticket — sent the person to the
+					// login screen and then to the service root, with no way for the
+					// consumer to fix it: the wanted path exists only inside this
+					// middleware. Two consumer repositories were surveyed with exactly
+					// this defect and neither could have repaired it from its own side.
+					//
+					// The value is r.URL.RequestURI() — the request's OWN path and query,
+					// so it is same-origin by construction rather than by validation —
+					// and handleLogin re-validates it through isValidRedirect anyway,
+					// which is the check that matters for the round trip through the
+					// state cookie.
+					target := a.cfg.LoginPath
+					if rt := r.URL.RequestURI(); isValidRedirect(rt) {
+						target = appendQueryParam(target, queryParamRedirect, rt)
+					}
+					http.Redirect(w, r, target, http.StatusFound)
 					return
 				}
 				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
@@ -536,12 +555,127 @@ func (a *Auth) handleCallback(w http.ResponseWriter, r *http.Request) {
 		slog.String(logKeyClientIP, clientIP(r)),
 	)
 
-	// Redirect to stored redirect or root.
-	target := "/"
-	if storedRedirect != "" {
-		target = storedRedirect
+	// Redirect to the stored deep link, else to where this service says a
+	// successful login belongs.
+	//
+	// ⚠️ THAT SECOND HALF WAS A HARD-CODED "/" UNTIL v0.18.0, WITH NO CONFIG FIELD,
+	// AND IT WAS BROKEN FOR EVERY CONSUMER WHOSE UI IS NOT AT THE ROOT — in two
+	// different ways, one loud and one silent. A service that serves its UI under
+	// a prefix and registers nothing at "/" answered **404 on every successful
+	// login**; a service that serves a public marketing site at "/" landed every
+	// signed-in administrator on the marketing homepage, with no error anywhere.
+	// Neither could be fixed from the consumer side, because this line was not
+	// configurable.
+	target := a.postLoginTarget(storedRedirect)
+
+	// ⚠️ THE IDENTITY BACKEND'S DECISION OVERRIDES THE CONSUMER'S DESTINATION,
+	// AND ONLY HERE (v0.18.0).
+	//
+	// Before this arm existed, a first-time human had exactly two possible fates:
+	// silently adopt whichever organization the backend listed first — which for
+	// anyone who used a sibling product earlier is an auto-minted personal
+	// workspace they cannot get off — or be bounced to a logout page. Neither is
+	// onboarding, and there was no hook anywhere in this file where a third
+	// answer could be given.
+	//
+	// ⚠️ THE VALUE IS DELIBERATELY NOT PASSED THROUGH isValidRedirect. That helper
+	// enforces a same-origin RELATIVE path because the value it guards comes from
+	// the BROWSER (`/auth/login?redirect=…`). A landing URL is the opposite kind
+	// of value — absolute and cross-origin by construction, from the body of an
+	// authenticated server-to-server response — so isValidRedirect would reject
+	// every correct one. It is validated instead by the resolver that produced it,
+	// which is the only component that knows which backend it is talking to; see
+	// obolresolver.admitLanding for what is checked and why.
+	//
+	// ⚠️ EVERY ARM OF RedirectTarget FAILS TOWARDS `target`, never away from it: a
+	// nil decision, an unrecognised one, and one that wants a redirect but names
+	// no URL all leave this login ending exactly where it used to.
+	if landingURL, ok := user.Landing.RedirectTarget(); ok {
+		if returnTo := a.consumerReturnTo(target); returnTo != "" {
+			landingURL = appendQueryParam(landingURL, queryParamConsumerReturnTo, returnTo)
+		}
+		a.logger.Info(logMsgLandingRedirect,
+			slog.String(logKeyComponent, logComponent),
+			slog.String(logKeySub, user.Sub),
+			slog.String(logKeyLandingDecision, user.Landing.Decision),
+			slog.String(logKeyTarget, target),
+		)
+		http.Redirect(w, r, landingURL, http.StatusFound)
+		return
 	}
+
 	http.Redirect(w, r, target, http.StatusFound)
+}
+
+// postLoginTarget picks where a SUCCESSFUL login lands: the deep link the
+// browser was heading to, else this service's configured destination.
+//
+// ⚠️ IT IS A FUNCTION SO IT CAN BE DRIVEN BY A TEST. handleCallback needs a full
+// authorization-code exchange to reach its final redirect, so a decision left
+// inline there is a decision nothing exercises — and a config field whose only
+// reader is unreachable from any test READS AS BUILT while doing nothing.
+func (a *Auth) postLoginTarget(storedRedirect string) string {
+	if storedRedirect != "" {
+		return storedRedirect
+	}
+	return a.cfg.PostLoginRedirect
+}
+
+// consumerReturnTo turns the consumer-side post-login target into an ABSOLUTE
+// URL on this service's own origin, so the identity backend can send the person
+// back once its flow finishes. Returns "" when there is nothing worth carrying.
+//
+// ⚠️ THE ORIGIN COMES FROM CallbackURL AND NOT FROM THE REQUEST. A request-derived
+// scheme is wrong behind a TLS-terminating proxy — the commonest deployment here
+// — and would emit an `http://` return address for an `https://` service.
+// CallbackURL is configured, absolute, and already registered with the provider,
+// so it is the authoritative statement of where this service lives.
+//
+// ⚠️ IT IS CARRIED UNDER ITS OWN PARAMETER NAME, NOT UNDER `return_to`, AND THE
+// NAME IS THE SAFETY PROPERTY. `return_to` is a widely-used SAME-ORIGIN
+// convention in these products, and obol's own login screen already refuses a
+// value on it that is not a relative path. Handing a cross-origin absolute URL
+// to that convention would either be silently dropped (harmless but confusing)
+// or, the first time somebody widened the reader, become an open redirect on the
+// identity backend. A distinct name means the value can only be consumed by code
+// written knowing it is cross-origin — which must validate the origin against an
+// allow-list before honouring it.
+//
+// ⚠️ AND NOTHING HONOURS IT YET, WHICH IS WHY IT IS RECORDED RATHER THAN RELIED
+// ON: the information exists only here, at the moment the consumer knows both
+// its own origin and where the person was heading, so dropping it would make a
+// later resume impossible without changing this file again.
+func (a *Auth) consumerReturnTo(target string) string {
+	if target == "" || target == "/" {
+		// Nothing was deep-linked; the person was heading to the service root,
+		// which is where they will go anyway once the backend's flow finishes.
+		return ""
+	}
+	if !isValidRedirect(target) {
+		// Should be unreachable — `target` is either "/" or a value
+		// isValidRedirect already admitted at /auth/login — but a caller-supplied
+		// path that reaches here unvalidated must not be turned into an absolute
+		// URL and handed to another origin.
+		return ""
+	}
+	base, err := url.Parse(a.cfg.CallbackURL)
+	if err != nil || base.Scheme == "" || base.Host == "" {
+		return ""
+	}
+	return base.Scheme + "://" + base.Host + target
+}
+
+// appendQueryParam adds one query parameter to an absolute URL, preserving any
+// the URL already carries.
+func appendQueryParam(rawURL, key, value string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	q := u.Query()
+	q.Set(key, value)
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 // handleLogout clears the session and redirects to Keycloak's end-session endpoint.

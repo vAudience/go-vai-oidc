@@ -102,8 +102,41 @@ type User struct {
     Memberships []Membership       // set by your UserResolver (multi-org/tenant support)
     Claims      map[string]string // extra claims requested via Config.ExtraClaims
     RealmRoles  []string          // Keycloak realm_access.roles; nil for non-Keycloak providers
+    Landing     *Landing          // the identity backend's post-login routing DECISION (v0.18.0)
 }
 ```
+
+### `Landing` — where this person should be sent (v0.18.0)
+
+```go
+type Landing struct {
+    Decision string // "onboarding" | "org_selection" | "ready"
+    URL      string // ABSOLUTE, on the identity backend's origin; empty on "ready"
+}
+
+if target, ok := user.Landing.RedirectTarget(); ok {
+    http.Redirect(w, r, target, http.StatusFound)   // handleCallback already does this for you
+}
+```
+
+`obolresolver` populates it from obol ≥ 3.185.0 and `handleCallback` acts on it automatically, so
+most consumers need no code at all — only a dependency bump.
+
+⚠️ **`nil` means the backend expressed no opinion, which is NOT the same as `ready`.** An older
+backend, a custom resolver or no resolver leaves it nil, and the callback then behaves exactly as it
+did before this field existed.
+
+⚠️ **It is a DECISION, not a pair of facts, and re-deriving it is the defect it exists to close.**
+The backend deliberately does not publish "is this user new" and "how many orgs" for each consumer
+to route on: a fleet survey found five surfaces deriving one rule five different ways, two of which
+pinned a person to an auto-minted personal workspace with no way off it.
+
+⚠️ **`OrgID` keeps being filled in every arm, including `org_selection`.** A consumer that ignores
+`Landing` degrades to the previous behaviour — never to an empty org id, which several services read
+as *all tenants*.
+
+⚠️ **It is not persisted in the session, deliberately.** It is a verdict about one login, so a
+session copy goes stale the moment the person acts on it.
 
 `RealmRoles` is a Keycloak convenience: for any other provider the `realm_access` claim is simply
 absent and the slice is nil (not an error). Check membership with `user.HasRealmRole("some-role")`.
@@ -178,6 +211,13 @@ vaioidc.Config{
     // Optional (defaults shown).
     LogoutRedirect       string        // post-logout redirect (default "/")
     LoginPath            string        // RequireSession redirect target (default "/auth/login")
+    PostLoginRedirect    string        // where a SUCCESSFUL login lands when nothing was
+                                       // deep-linked (default "/") — ⚠️ SET IT IF YOUR UI IS
+                                       // NOT AT THE ROOT: until v0.18.0 this was hard-coded,
+                                       // and it 404'd every login for a service whose UI is
+                                       // under a prefix, and silently landed administrators on
+                                       // the public marketing homepage for a service that
+                                       // serves one at "/".
     SessionTTL           time.Duration // cookie lifetime (default 24h)
     CookieName           string        // (default "vai_session")
     CookiePath           string        // (default "/")

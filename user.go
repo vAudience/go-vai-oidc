@@ -41,6 +41,88 @@ type User struct {
 	// entry needed — this is a first-class field, like OrgID/Memberships). Nil
 	// if the claim was absent or the ID token carried no realm roles at all.
 	RealmRoles []string `json:"realm_roles,omitempty"`
+
+	// Landing is the identity backend's DECISION about where this person should
+	// be sent after login (v0.18.0, obolresolver populates it from obol's
+	// /identity/ensure). Nil means the backend expressed no opinion — an older
+	// obol, a custom resolver, or no resolver at all — and the callback then
+	// behaves exactly as it did before this field existed.
+	//
+	// ⚠️ IT IS A DECISION, NOT A PAIR OF FACTS, AND RE-DERIVING IT IS THE DEFECT
+	// IT EXISTS TO CLOSE. The identity backend deliberately does not publish
+	// "is this user new" and "how many orgs" for each consumer to route on: a
+	// fleet survey found five surfaces deriving one rule five different ways,
+	// including two that pinned a person to an auto-minted personal workspace
+	// with no way off it.
+	//
+	// ⚠️ IT IS NOT PERSISTED IN THE SESSION, DELIBERATELY. It is a one-shot
+	// verdict about a login, not an attribute of the person: a user who lands on
+	// onboarding and completes it would otherwise carry `onboarding` for the rest
+	// of their session. TestSessionCarriesEveryUserFieldOrLedgersWhyNot pins that
+	// decision so it reads as a choice rather than the omission that dropped
+	// Memberships in v0.14.0.
+	Landing *Landing `json:"landing,omitempty"`
+}
+
+// Landing decisions an identity backend can express. A consumer MUST treat an
+// unrecognised value as "no opinion" and proceed as it did before, never as a
+// refusal — the vocabulary belongs to the backend and may grow.
+const (
+	// LandingDecisionOnboarding — this identity holds no organization anybody
+	// deliberately placed them in. Send the browser to Landing.URL.
+	LandingDecisionOnboarding = "onboarding"
+
+	// LandingDecisionOrgSelection — several real organizations and no usable
+	// default; the person must choose. Send the browser to Landing.URL.
+	LandingDecisionOrgSelection = "org_selection"
+
+	// LandingDecisionReady — proceed to this service's own destination. URL is
+	// empty in this arm by design.
+	LandingDecisionReady = "ready"
+)
+
+// Landing carries the identity backend's post-login routing decision.
+type Landing struct {
+	// Decision is one of the LandingDecision* constants, or a value this
+	// version of the library does not know.
+	Decision string `json:"decision"`
+
+	// URL is an ABSOLUTE URL on the identity backend's own origin, already
+	// validated by the resolver that produced it.
+	//
+	// ⚠️ IT IS EMPTY ON `ready`, AND ALSO EMPTY WHEN THE BACKEND COULD NOT
+	// COMPUTE ONE (its public base URL unset). An empty URL therefore never
+	// means "redirect to the empty string" — RedirectTarget returns false and
+	// the login proceeds to the consumer's own destination.
+	URL string `json:"url,omitempty"`
+}
+
+// RedirectTarget reports the URL the browser should be sent to instead of the
+// consumer's own post-login destination, and whether there is one.
+//
+// ⚠️ IT IS THE ONE PLACE THAT DECIDES, and every arm of it fails towards the
+// consumer's existing behaviour rather than away from it:
+//
+//   - a nil Landing (no opinion, or a backend older than the field) → false
+//   - `ready`, or any decision this library does not recognise → false
+//   - a decision that wants a redirect but carries no URL → false
+//
+// The last arm is the one worth stating: a backend that has decided somebody
+// needs onboarding but cannot say where is still better served by letting the
+// login finish, because the alternative is a person who authenticated
+// successfully and lands nowhere.
+func (l *Landing) RedirectTarget() (string, bool) {
+	if l == nil || l.URL == "" {
+		return "", false
+	}
+	switch l.Decision {
+	case LandingDecisionOnboarding, LandingDecisionOrgSelection:
+		return l.URL, true
+	default:
+		// `ready` and every value this version does not compile. A decision the
+		// library cannot interpret must not move the user (see the const block).
+		return "", false
+	}
 }
 
 // HasRealmRole reports whether the user's ID token carried the given Keycloak

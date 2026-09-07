@@ -13,9 +13,13 @@ const (
 const (
 	defaultCookiePath     = "/"
 	defaultLogoutRedirect = "/"
-	defaultLoginPath      = "/auth/login"
-	defaultSessionTTL     = 24 * time.Hour
-	oidcCookieMaxAge      = 300 // 5 minutes for state/PKCE cookies
+	// defaultPostLoginRedirect preserves the pre-v0.18.0 behaviour exactly, so the
+	// new field is purely additive: a consumer that sets nothing lands where it
+	// always did.
+	defaultPostLoginRedirect = "/"
+	defaultLoginPath         = "/auth/login"
+	defaultSessionTTL        = 24 * time.Hour
+	oidcCookieMaxAge         = 300 // 5 minutes for state/PKCE cookies
 )
 
 // OIDC scopes.
@@ -32,6 +36,18 @@ const (
 	queryParamError            = "error"
 	queryParamErrorDescription = "error_description"
 	queryParamRedirect         = "redirect"
+
+	// queryParamConsumerReturnTo carries the CONSUMER's absolute post-login
+	// destination onto an identity-backend landing URL (v0.18.0).
+	//
+	// ⚠️ IT IS DELIBERATELY NOT NAMED `return_to`. That name is a same-origin
+	// convention across these products — the identity backend's own login screen
+	// refuses a value on it that is not a relative path — and handing it a
+	// cross-origin absolute URL would be silently dropped at best and an open
+	// redirect the first time somebody widened the reader. A distinct name means
+	// only code written knowing the value is cross-origin can consume it, and such
+	// code must check the origin against an allow-list first.
+	queryParamConsumerReturnTo = "consumer_return_to"
 )
 
 // OIDC token fields.
@@ -113,19 +129,21 @@ const logComponent = "go-vai-oidc"
 
 // Log keys.
 const (
-	logKeyComponent      = "component"
-	logKeyClientID       = "client_id"
-	logKeyIssuer         = "issuer"
-	logKeyError          = "error"
-	logKeySub            = "sub"
-	logKeyEmail          = "email"
-	logKeyReason         = "reason"
-	logKeyClientIP       = "client_ip"
-	logKeyPath           = "path"
-	logKeyEmailDomain    = "email_domain"
-	logKeyRequiredDomain = "required_domain"
-	logKeyCookieBytes    = "cookie_bytes"
-	logKeyCookieChunks   = "cookie_chunks"
+	logKeyComponent       = "component"
+	logKeyClientID        = "client_id"
+	logKeyIssuer          = "issuer"
+	logKeyError           = "error"
+	logKeySub             = "sub"
+	logKeyTarget          = "target"
+	logKeyLandingDecision = "landing_decision"
+	logKeyEmail           = "email"
+	logKeyReason          = "reason"
+	logKeyClientIP        = "client_ip"
+	logKeyPath            = "path"
+	logKeyEmailDomain     = "email_domain"
+	logKeyRequiredDomain  = "required_domain"
+	logKeyCookieBytes     = "cookie_bytes"
+	logKeyCookieChunks    = "cookie_chunks"
 )
 
 // Token-retention log messages (v0.12.0).
@@ -170,6 +188,7 @@ const (
 	emailAtSeparator                 = "@"
 	requireEmailDomainForbiddenRunes = "@ \t\r\n"
 	logMsgEmailDomainRejected        = "OIDC callback: email domain rejected"
+	logMsgLandingRedirect            = "OIDC callback: identity backend decided the landing destination"
 	logReasonEmailDomainMismatch     = "email_domain_mismatch"
 	logReasonEmailDomainMissingClaim = "email_claim_missing_or_malformed"
 )

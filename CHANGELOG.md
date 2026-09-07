@@ -1,5 +1,108 @@
 # Changelog
 
+## v0.18.0 — 2026-09-07
+
+**Where a person lands when they log in.** Three defects, all of them invisible from the consumer's
+side because the deciding line was inside this library. Pays **go-vai-oidc#3** and **obol#29**;
+the landing decision needs **obol ≥ 3.185.0**, and everything else works against any obol.
+
+Additive: a consumer that changes nothing behaves exactly as before, with one deliberate exception
+noted at the end.
+
+### 1 — a first-time human had two possible fates and neither was onboarding
+
+`obolresolver` set `user.OrgID = memberships[0].org_id` — and obol serves that list ordered
+`joined_at ASC`, so it is *the oldest membership*. For anyone who touched a sibling product first
+that is an auto-minted personal workspace rather than the company they belong to. The only
+alternative was `AllowEmptyMembership=false` rejecting the login to a logout page.
+
+⛔ **THE ROOT CAUSE IS THAT A BRAND-NEW USER IS BYTE-INDISTINGUISHABLE FROM A RETURNING ONE.** obol
+mints a `pending`, tierless personal organization for every authenticated subject with no
+membership, so "no org" never arrives — and three consumer services each wrote a fail-closed
+"no org ⇒ reject the login" path that is therefore **dead code**, while the human those paths were
+written for sails into the product UI on an unfunded placeholder.
+
+obol now serves a **decision** on the same response: `onboarding` · `org_selection` · `ready`, plus
+an absolute URL it computes. `User.Landing` carries it; `Landing.RedirectTarget()` decides;
+`handleCallback` acts on it. Nil means the backend expressed no opinion (an older obol, a custom
+resolver, none at all) and the callback behaves exactly as before.
+
+⚠️ **`OrgID` IS STILL FILLED IN EVERY ARM, INCLUDING `org_selection`, AND REMOVING THAT IS THE MOST
+TEMPTING WRONG CHANGE.** obol fills it beside the decision on purpose: several services in that
+fleet read an **empty org id as *all tenants***, so a consumer that ignores `landing` must degrade
+to the previous behaviour and never to a cross-tenant read. It is also what lets the fleet adopt
+this in any order.
+
+⚠️ **The landing URL is NOT passed through `isValidRedirect`, and that split is the security
+argument.** `isValidRedirect` enforces a same-origin *relative path* because the value it guards
+comes from the **browser** (`/auth/login?redirect=…`). A landing URL is the opposite kind of value —
+absolute and cross-origin by construction, from an authenticated server-to-server response — so
+that helper would reject every correct one. It is admitted instead by `obolresolver`, the only
+component that knows which backend it is talking to: an absolute `http`/`https` URL with a host and
+no embedded credentials, optionally pinned by `AllowedLandingHosts`. A rejected URL does **not**
+reject the login; the decision still reaches the consumer and the login finishes where it would
+have.
+
+⚠️ **`AllowedLandingHosts` must NOT default to `BaseURL`'s host, which is the obvious tightening and
+is wrong.** `BaseURL` is how a service *dials* obol and is routinely cluster-internal; the landing
+URL is the *public* address a browser must reach. A same-host rule would reject every correct URL
+and the failure would look like obol not serving a decision at all.
+
+### 2 — every successful login went to a hard-coded `/`
+
+`target := "/"` with no config field. Two surveyed consumers were broken by it in two different
+ways: one serves its UI under a prefix and registers nothing at `/`, so **every successful login
+answered 404**; the other serves a public marketing site at `/`, so every signed-in administrator
+landed on the **marketing homepage** — the more dangerous shape, because nothing looks broken and
+nobody files a bug. Neither could fix it from its own side.
+
+New `Config.PostLoginRedirect`, defaulting to `/` so the change is additive, validated at `New()`
+rather than at the end of somebody's login.
+
+### 3 — `RequireSession` discarded every deep link
+
+A signed-out browser request to a gated page is turned into a login in exactly one place — this
+middleware's refusal — and it redirected to a **static** `LoginPath`. So a shared admin URL, a
+bookmarked report or a link in a ticket sent the person to the login screen and then to the service
+root, and no consumer could repair it because the wanted path exists only inside this function. It
+now carries `?redirect=<the request's own URI>`, which is same-origin by construction, and
+`handleLogin` re-validates it as it always did.
+
+⚠️ **`appendQueryParam` and not string concatenation.** Both surveyed consumers use
+`/auth/login?kc_idp_hint=google`, so a naive join produces a second `?` and **loses the IdP hint** —
+downgrading a Google-federated login to Keycloak's own password form.
+
+### Also
+
+- **A version header on the `obolresolver` request** (`X-Obol-Client-Version: go-vai-oidc/0.18.0`).
+  ⚠️ **This is the only place a named measurement gap could be closed.** obol counts which client
+  contract each consumer runs, and that rail had an irreducible `absent` floor *because this module
+  hand-builds its request and carried no version header on any released version* — so a share of it
+  belonged to a shared dependency no consumer could fix by pinning a newer obol SDK. Measured on the
+  dev cluster beforehand: one service read `identity.write` 1,329 against `absent` 1,672.
+  `TestClientVersionMatchesTheManifest` keeps the string in step with `versions.yaml`, because a
+  version that drifts is worse than none — obol bounds it against the contract it ships, so a stale
+  value reads as a *different, older consumer* rather than as unknown.
+- **A cross-origin return-to** (`?consumer_return_to=`) on the landing URL, built from
+  `CallbackURL` rather than from the request, because a request-derived scheme is wrong behind a
+  TLS-terminating proxy. ⚠️ It is deliberately **not** named `return_to`: that is a same-origin
+  convention in these products (obol's own login screen refuses a non-relative value on it), and
+  handing it a cross-origin absolute URL would be silently dropped at best and an open redirect the
+  first time somebody widened the reader. **Nothing honours it yet** — it is recorded here because
+  this is the only moment a consumer knows both its own origin and where the person was heading.
+- **`TestSessionCarriesEveryUserFieldOrLedgersWhyNot`**, a guard for a defect this repository has
+  already shipped: v0.14.0 added `User.Memberships` and a hand-rolled `sessionPayload` literal
+  silently dropped it, leaving multi-org consumers with no picker. The fix at the time was a
+  **comment** warning the next person, and a comment cannot fail a build. `Landing` is its first
+  ledgered omission — deliberately not persisted, because a verdict about one login goes stale the
+  moment the person acts on it.
+
+### The one behaviour change
+
+`RequireSession`'s browser refusal now redirects to `LoginPath` **with** `?redirect=…` instead of
+bare. A consumer that pattern-matches that Location exactly will see the difference; nothing else
+does.
+
 ## v0.17.0 — 2026-08-21
 
 **A session user carries the teams it belongs to.** Fully additive and backward-compatible:

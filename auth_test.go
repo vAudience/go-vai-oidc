@@ -212,7 +212,12 @@ func TestRequireSession_NoSession_Browser(t *testing.T) {
 	handler.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusFound, w.Code)
-	assert.Equal(t, "/auth/login", w.Header().Get("Location"))
+	// ⚠️ THE DEEP LINK IS NOW CARRIED, AND THIS ASSERTION CHANGED IN v0.18.0.
+	// It used to expect a bare "/auth/login", which is what the defect looked
+	// like from inside the library: a signed-out browser request to a gated page
+	// is turned into a login HERE and nowhere else, so a static LoginPath
+	// discarded the wanted destination with no way for a consumer to repair it.
+	assert.Equal(t, "/auth/login?redirect=%2Fdashboard", w.Header().Get("Location"))
 }
 
 func TestRequireSession_NoSession_API(t *testing.T) {
