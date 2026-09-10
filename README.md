@@ -7,7 +7,8 @@ Dex, …).
 
 - **Any provider** — point it at an issuer URL; discovery does the rest.
 - **Stateless** — the verified user lives in an AES-256-GCM-encrypted cookie. No database, no Redis,
-  no server-side session store, no per-request token refresh.
+  no server-side session store. Optionally revalidated against the provider on a floor
+  (`RevalidateInterval`) so a sign-out elsewhere propagates — still with no store.
 - **Small surface** — `New()`, mount `Routes()`, protect handlers with `RequireSession()`, read the
   user with `UserFromContext()`.
 - **Pluggable identity** — an optional `UserResolver` callback runs at login to enrich the user
@@ -90,6 +91,60 @@ Browser → GET /auth/login
 
 The session cookie is `HttpOnly`, `Secure` (unless `InsecureCookie`), `SameSite=Lax`, and encrypted
 with a per-service AES-256 key. It is self-contained — no round-trip to the provider on each request.
+
+## Sign-out propagation (v0.19.0)
+
+By default a product session is an **independent copy** of an authentication that happened once:
+`RequireSession` decrypts the cookie, checks its expiry, and never re-contacts the provider. Signing
+out of one service terminates the provider's SSO session and clears that service's own cookie —
+and every **sibling** service keeps serving the same person with full access until its own cookie
+expires, up to `SessionTTL`, with every health signal green.
+
+`RevalidateInterval` closes that. On a request whose session has gone longer than the interval
+without being validated, the library performs a `refresh_token` grant. Keycloak invalidates refresh
+tokens bound to an SSO session when that session ends, so an explicit `invalid_grant` **is** the
+signal that the person signed out elsewhere.
+
+```go
+cfg.RetainTokens = true            // required: revalidation needs the refresh token
+cfg.RevalidateInterval = 5 * time.Minute
+```
+
+Three things follow, and only the first is the headline:
+
+1. **Sign-out propagates** within one interval.
+2. **The session becomes sliding.** Before v0.19.0 the cookie's expiry was absolute — set once at
+   login and never moved. A successful revalidation re-stamps it, so an active client keeps its
+   session and an abandoned one does not.
+3. **The provider's session stays alive too.** A successful refresh is a provider interaction, so it
+   resets the provider's idle timeout. That is what stops the two clocks running independently.
+
+**The absolute ceiling is not a value here** — it is the realm's `ssoSessionMaxLifespan`. Past it a
+refresh grant fails regardless of what this library believes, and the failure arrives on the same
+`invalid_grant` path.
+
+### `GET <mount>/session`
+
+Registered by `Routes()` and returned by `SkipPaths()`. It runs the same revalidation and answers
+`{"authenticated": …}` — 200 when live, 401 when not, always `Cache-Control: no-store`. It is what a
+hidden browser tab pings so a sign-out in a sibling product reaches this one, and what an SPA's 401
+trap consults. `revalidated_at` is the honest bound on the answer: liveness is only ever as fresh as
+the interval.
+
+### Three things to get right before enabling it
+
+- ⛔ **Only `invalid_grant` signs the user out.** A transport error, a 5xx, or any other OAuth2 error
+  code fails **open** and is logged. This matters more than the feature itself: treating those as a
+  sign-out turns one provider blip — or one rotated client secret, which answers `invalid_client` —
+  into a synchronized fleet-wide logout.
+- ⚠️ **Do not enable this against a realm that rotates refresh tokens** without addressing
+  concurrency first. Several requests arriving together after the interval elapses each perform
+  their own grant; with rotation on, the losers hold a token the winner invalidated and will fail
+  their *next* revalidation with a spurious `invalid_grant`. With `revokeRefreshToken = false` it is
+  harmless.
+- ⚠️ **Sessions issued before retention was enabled carry no refresh token** and therefore fail open
+  until they expire — a bounded transition window of at most one `SessionTTL`. Killing them instead
+  would mean a library upgrade signs out everyone currently logged in.
 
 ## The User
 
@@ -226,6 +281,12 @@ vaioidc.Config{
     ExtraClaims          []string      // extra ID-token claims → User.Claims
     UserResolver         UserResolver  // enrich/reject at login
     RetainTokens         bool          // store access+refresh tokens in the session
+    RevalidateInterval   time.Duration // re-ask the provider whether this person is still signed
+                                       // in, at most this often (default 0 = OFF = pre-v0.19.0
+                                       // behaviour). ⛔ REQUIRES RetainTokens and must be shorter
+                                       // than SessionTTL; New() refuses both, because an interval
+                                       // that silently does nothing is indistinguishable from one
+                                       // that works. See "Sign-out propagation" below.
     RequireEmailDomain   string        // reject logins whose email domain != this
     DiscoveryRetryBudget time.Duration // retry cold-boot discovery failures (default 90s; <0 disables)
     IssuerURLOverride    string        // accept a different iss than the discovery URL (see below)

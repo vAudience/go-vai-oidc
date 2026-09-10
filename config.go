@@ -108,6 +108,60 @@ type Config struct {
 	// while the Keycloak SSO session lives.
 	RetainTokens bool
 
+	// Optional: Session revalidation floor (v0.19.0).
+	//
+	// ZERO = OFF, which is the pre-v0.19.0 behaviour exactly: the session cookie
+	// is decrypted, its Exp is checked, and the IdP is never re-contacted.
+	//
+	// When positive, a request whose session has gone longer than this without
+	// being validated performs a `refresh_token` grant against the IdP before
+	// being served. Three things follow, and only the first is the headline:
+	//
+	//  1. ⭐ SIGN-OUT PROPAGATES. Keycloak invalidates refresh tokens bound to an
+	//     SSO session when that session ends, so a refusal carrying
+	//     `invalid_grant` IS the signal that the person signed out of a sibling
+	//     product. Without this, signing out of one product leaves every other
+	//     product serving that person with full access until its own cookie
+	//     expires — up to SessionTTL — with every health signal green.
+	//  2. ⭐ THE SESSION BECOMES SLIDING. Today the cookie's Exp is ABSOLUTE: it
+	//     is set once at login and never moves. A successful revalidation
+	//     re-stamps it, so an active client stays signed in and an abandoned one
+	//     does not.
+	//  3. ⭐ IT KEEPS THE IdP SESSION ALIVE TOO. A successful refresh grant is a
+	//     Keycloak interaction, so it resets `ssoSessionIdleTimeout`. That is
+	//     what stops the product cookie and the SSO session expiring on
+	//     independent, inverted clocks.
+	//
+	// The absolute ceiling is NOT a value here: it is the realm's
+	// `ssoSessionMaxLifespan`. A refresh grant fails once the SSO session passes
+	// it regardless of what this library does, so the ceiling belongs to the
+	// realm and is enforced by the same `invalid_grant` path.
+	//
+	// ⛔ REQUIRES RetainTokens. Revalidation needs the refresh token, which only
+	// RetainTokens stores. New() REFUSES the combination rather than accepting
+	// it, because a revalidation interval that silently does nothing is
+	// indistinguishable — in config, on the wire, and in the pod spec — from one
+	// that works.
+	//
+	// ⛔ MUST BE SHORTER THAN SessionTTL, and New() refuses otherwise: a floor
+	// the cookie never survives to reach is inert, and looks configured.
+	//
+	// ⚠️ CHOOSE IT AGAINST THE REALM'S ACCESS-TOKEN LIFETIME. It is the window in
+	// which a sign-out elsewhere may go unnoticed. Matching the access-token
+	// lifetime (300s on this fleet's realm) means the refresh is doing work that
+	// was needed anyway.
+	//
+	// ⚠️ CONCURRENCY, ON A REALM THAT ROTATES REFRESH TOKENS. Several requests
+	// arriving together after the floor elapses each perform their own grant.
+	// With `revokeRefreshToken = false` (this fleet's realm) that is harmless,
+	// because the token is not single-use. With rotation ON, the losers of the
+	// race hold a token the winner has invalidated and will fail their NEXT
+	// revalidation with `invalid_grant` — i.e. a spurious sign-out. Do not
+	// enable this against a rotating realm without addressing that first.
+	// The same hazard already exists in Auth.AccessToken(); this field makes it
+	// reachable on ordinary page loads rather than only on API-key minting.
+	RevalidateInterval time.Duration
+
 	// Optional: Email domain gate.
 	//
 	// When set, the OIDC callback rejects logins whose `email` claim's
@@ -311,6 +365,25 @@ func (c *Config) validate() ([]byte, error) {
 	if !isValidRedirect(c.PostLoginRedirect) {
 		return nil, fmt.Errorf("PostLoginRedirect must be a safe relative path beginning with '/', got %q: %w",
 			c.PostLoginRedirect, ErrInvalidConfig)
+	}
+
+	// Validate the revalidation floor (v0.19.0). Both refusals exist because the
+	// misconfiguration they catch is INVISIBLE at every other layer: the config
+	// parses, New() succeeds, the pod boots, every login works, and the feature
+	// that was configured simply never runs. There is no log line and no metric
+	// that distinguishes "revalidating every 5 minutes" from "revalidating
+	// never" — only the absence of a sign-out nobody was watching for.
+	if c.RevalidateInterval > 0 {
+		if !c.RetainTokens {
+			return nil, fmt.Errorf(
+				"RevalidateInterval is set to %s but RetainTokens is false: revalidation performs a refresh_token grant and only RetainTokens stores the refresh token, so the interval would be silently inert: %w",
+				c.RevalidateInterval, ErrInvalidConfig)
+		}
+		if c.RevalidateInterval >= c.SessionTTL {
+			return nil, fmt.Errorf(
+				"RevalidateInterval (%s) must be shorter than SessionTTL (%s): a session that expires before its first revalidation is never revalidated at all: %w",
+				c.RevalidateInterval, c.SessionTTL, ErrInvalidConfig)
+		}
 	}
 
 	// Warn on insecure config (http callback without InsecureCookie).

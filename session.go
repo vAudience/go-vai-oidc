@@ -38,6 +38,22 @@ type sessionPayload struct {
 	AccessToken    string `json:"at,omitempty"`
 	RefreshToken   string `json:"rt,omitempty"`
 	AccessTokenExp int64  `json:"ate,omitempty"`
+
+	// LastValidated (v0.19.0) is the unix time of the most recent SUCCESSFUL
+	// refresh_token grant against the IdP — the anchor the revalidation floor is
+	// measured from. It is the session's own record of "when did we last have
+	// the IdP's word for this", which is a different question from Exp ("when
+	// does this cookie stop being accepted") and from AccessTokenExp ("when does
+	// the forwarded bearer stop working").
+	//
+	// ⚠️ ZERO IS NOT "NEVER VALIDATED", IT IS "NOT RECORDED": every session
+	// issued before v0.19.0 carries zero, and so does every session issued by
+	// IssueSession. maybeRevalidate therefore derives the anchor from the
+	// session's issue time (Exp minus SessionTTL) rather than treating zero as
+	// the epoch — which would make every pre-existing session revalidate on its
+	// very next request, turning a library upgrade into a fleet-wide refresh
+	// storm.
+	LastValidated int64 `json:"lv,omitempty"`
 }
 
 // toUser converts the payload to a public User.

@@ -1,5 +1,131 @@
 # Changelog
 
+## v0.19.0 — 2026-09-10
+
+**Signing out of one product now signs you out of the others.** Option B of the fleet's "one logout"
+design: a stateless, refresh-backed revalidation floor. Pays **DC-PORTAL-SIBLINGSESSION-01**.
+
+Additive: `RevalidateInterval` defaults to zero, which is the pre-v0.19.0 behaviour exactly. A
+consumer that changes nothing performs no new network calls and behaves identically.
+
+### The gap
+
+A product session was an **independent copy** of an authentication that happened once.
+`RequireSession` decrypted the cookie, checked `Exp`, and never re-contacted the IdP. Signing out of
+one product terminated the Keycloak SSO session and cleared that product's own cookie — and the
+**five sibling products kept serving that person with full access until their own cookies expired**,
+up to `SessionTTL` (24 h by default), with every health signal green throughout.
+
+⛔ **Nothing else in the stack closed it either, and the reassuring backstop was refuted by
+measurement.** There is no session store to invalidate; cookies are host-only, so no sibling can see
+them; and the downstream authorization broker verifies tokens OFFLINE against cached JWKS, with no
+introspection and no revocation list. The browser path carries no Keycloak bearer at all. Nothing
+anywhere re-asked the IdP whether the person was still signed in.
+
+### The mechanism
+
+Keycloak invalidates refresh tokens bound to an SSO session when that session ends. So a
+`refresh_token` grant is a QUESTION with a meaningful answer, and asking it on a floor converts the
+product session from an independent copy into something DERIVED from the IdP session — which is what
+"one login" means.
+
+```go
+cfg.RetainTokens = true
+cfg.RevalidateInterval = 5 * time.Minute
+```
+
+Three consequences, and only the first is the headline: sign-out propagates within one interval;
+**the session becomes sliding** (before this, `Exp` was absolute — set once at login and never
+moved); and a successful refresh is itself an IdP interaction, so it resets `ssoSessionIdleTimeout`
+and stops the product cookie and the SSO session expiring on independent, inverted clocks.
+
+⭐ **No ceiling is introduced here.** The absolute bound is the realm's `ssoSessionMaxLifespan`: past
+it a refresh grant fails regardless of what this library believes, and the failure arrives on the
+same `invalid_grant` path. A second ceiling in the library would be a second owner of one policy.
+
+### The three rules that make it safe rather than dangerous
+
+1. ⛔ **Fail CLOSED only on an explicit verdict.** `invalid_grant` is the IdP saying "this session
+   ended". A transport error, a 5xx, or any other OAuth2 error code is the IdP failing to answer,
+   and each fails OPEN. This matters more than the feature: `invalid_client` is a **rotated or wrong
+   client secret**, and failing closed on it would log out every user of a service at the moment of
+   a credential rotation — a symptom that reads as a security incident rather than a config error.
+2. ⛔ **Ask the IdP, never the local clock.** The refresh is FORCED (`forcedRefresh`), not routed
+   through `oauth2.TokenSource`'s expiry check, whose documented semantics return a still-valid
+   token **with no network call**. Built on that, a "revalidation" would answer "still signed in"
+   from a purely local check — the self-deceiving ping the design forbids, one that keeps the
+   product session alive while the IdP session dies underneath it, WIDENING the divergence it was
+   added to close. The mechanism is deliberate: a token with an empty `AccessToken` is never
+   `Valid()`, so the refresh path is always taken.
+3. ⚠️ **An unrevalidatable session is kept, not killed.** A session issued before token retention
+   carries no refresh token, so there is no question to ask. Killing it would mean a library upgrade
+   signs out everyone currently logged in. It is kept and expires on its own `Exp` — a bounded
+   transition window of at most one `SessionTTL`.
+
+### Added
+
+- **`Config.RevalidateInterval`** (`time.Duration`, default 0 = off). ⛔ `New()` REFUSES it without
+  `RetainTokens`, and refuses it at or above `SessionTTL`. Both refusals exist because the
+  misconfiguration is invisible at every other layer: the config parses, `New()` succeeds, the pod
+  boots, every login works, and the feature simply never runs. No log line and no metric
+  distinguishes "revalidating every 5 minutes" from "revalidating never" — only the absence of a
+  sign-out nobody was watching for.
+- **`ErrSessionRevoked`** — the IdP's explicit verdict, deliberately distinct from
+  `ErrTokenRefreshFailed` (which covers every refresh failure including transport errors).
+- **`GET <mount>/session`** + **`SessionStatus`** — liveness for a hidden tab's ping and an SPA's
+  401 trap. Always `Cache-Control: no-store`: a cached `authenticated: true` keeps a signed-out
+  browser looking signed in for as long as the cache lives, reintroducing the exact divergence the
+  endpoint detects. It carries no profile, no claims and no tokens — a liveness probe that leaks
+  identity is an oracle for anything that can reach it. `revalidated_at` is the honest bound on the
+  answer: liveness is only ever as fresh as the interval.
+- **`sessionPayload.LastValidated`** — the anchor the floor is measured from. ⛔ A zero value is
+  read as the session's ISSUE time (`Exp - SessionTTL`), never as the epoch: every session issued
+  before this release carries zero, and reading those as "last validated in 1970" makes the floor
+  overdue for all of them simultaneously, so the first request after a rolling upgrade fires a
+  refresh grant for **every logged-in user at once**, against the IdP, at deploy time.
+
+### Changed
+
+- **`RequireSession` and `OptionalSession` both revalidate.** ⛔ Leaving it out of the OPTIONAL path
+  would have been the more dangerous omission, not the safer one: that is the middleware every
+  public-facing page runs under, so a signed-out person would keep being rendered as signed in —
+  account menu, personalised chrome, "logged in as …" — across every product where they never
+  navigated a gated route. A revoked session there simply becomes an anonymous request.
+- **`SkipPathsWithPrefix` is now DERIVED from `SkipPaths`** instead of being a second hand-written
+  copy. Adding `/session` is exactly the change that gets made in one list and forgotten in the
+  other — and an auth route charonmw does not skip is an auth route nobody can reach, whose failure
+  reads as a dead session rather than a blocked request. A new test walks the ACTUAL chi router and
+  requires the two sets to match in both directions.
+- **A successful login now records `LastValidated`.** The code exchange (and `IssueSession`'s
+  alternate grant) IS an IdP interaction, so new sessions carry a recorded anchor rather than a
+  derived one.
+
+### Known limits, stated rather than discovered later
+
+- ⚠️ **Concurrency on a realm that rotates refresh tokens.** Several requests arriving together
+  after the floor elapses each perform their own grant. With `revokeRefreshToken = false` (this
+  fleet's realm) that is harmless — the token is not single-use. With rotation ON, the losers of the
+  race hold a token the winner invalidated and will fail their *next* revalidation with a spurious
+  `invalid_grant`. The same hazard already existed in `AccessToken()`; this field makes it reachable
+  on ordinary page loads rather than only on API-key minting.
+- ⚠️ **`IssueSession` (ROPC) sessions stay unrevalidatable** — that entry point takes no refresh
+  token, so the floor finds nothing to ask with and fails open for the cookie's whole life.
+- ⚠️ **A fail-open backs the anchor off by 30s** rather than retrying on the next request. Without
+  it, "retry next request" means "retry on EVERY request" against an IdP that is already unwell,
+  with a failing network call added to every page load.
+- ⚠️ **The refresh-token carry-forward guard in `maybeRevalidate` is currently unreachable and a
+  mutation deleting it SURVIVES the suite** — verified, not assumed. `x/oauth2` already carries the
+  previous refresh token forward when a refresh response omits one, so no test driving a real
+  `TokenSource` can tell the two versions apart. It is kept deliberately; do not "simplify" it on
+  the evidence that nothing goes red, because nothing can.
+
+### Verification
+
+Full suite green under `-race`. Six mutations applied and compile-verified; five caught:
+fail-closed-on-any-`RetrieveError` (4 tests) · the lazy `TokenSource` refresh (11 tests) ·
+zero-anchor-as-epoch (1) · revalidation dropped from `OptionalSession` (1) · `no-store` removed (1).
+The sixth is the carry-forward guard recorded above.
+
 ## v0.18.0 — 2026-09-07
 
 **Where a person lands when they log in.** Three defects, all of them invisible from the consumer's

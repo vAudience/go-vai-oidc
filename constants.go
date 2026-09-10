@@ -122,6 +122,57 @@ const (
 	pathLogin    = "/login"
 	pathCallback = "/callback"
 	pathLogout   = "/logout"
+
+	// pathSession is the liveness endpoint added in v0.19.0. It performs the
+	// same revalidation RequireSession does and reports whether the session is
+	// still live, so a hidden browser tab can ping it and an SPA's 401 trap can
+	// consult it. ⛔ It is registered by Routes() AND returned by SkipPaths():
+	// an auth route that charonmw does not skip is an auth route nobody can
+	// reach, and the failure looks like a dead session rather than a blocked
+	// request.
+	pathSession = "/session"
+)
+
+// Session revalidation (v0.19.0) — Option B of docs/PORTAL-ONE-LOGOUT.md.
+const (
+	// oauthErrorInvalidGrant is RFC 6749's error code for a refresh token the
+	// authorization server will not honour. ⛔ IT IS THE ONLY CODE THAT FAILS
+	// CLOSED. Keycloak returns it when the SSO session behind the token has
+	// ended — which is precisely the sign-out-elsewhere signal this whole
+	// mechanism exists to observe. Every other refusal (invalid_client from a
+	// rotated client secret, a 5xx, a transport error) fails OPEN, because
+	// treating those as a sign-out turns one Keycloak blip or one bad secret
+	// into a fleet-wide logout.
+	oauthErrorInvalidGrant = "invalid_grant"
+
+	// revalidateTransportBackoff is how long a session waits before retrying
+	// after a FAIL-OPEN outcome. Without it, every request during a Keycloak
+	// outage fires its own refresh attempt: the floor is only advanced on
+	// success, so "retry next request" means "retry on every request" — a
+	// thundering herd against an IdP that is already unwell, with the latency
+	// of a failing network call added to every page load.
+	//
+	// It is persisted into the session (by moving the validation anchor
+	// forward, never by extending Exp), so it holds across replicas and pod
+	// restarts, which an in-process limiter could not.
+	revalidateTransportBackoff = 30 * time.Second
+
+	// headerCacheControl / cacheControlNoStore keep the liveness endpoint out of
+	// every cache. A cached `authenticated: true` keeps a signed-out browser
+	// looking signed in for as long as the cache lives — the exact divergence
+	// the endpoint exists to detect, reintroduced by an intermediary.
+	headerCacheControl  = "Cache-Control"
+	cacheControlNoStore = "no-store"
+)
+
+// Session revalidation log keys + messages (v0.19.0).
+const (
+	logKeyRevalidateAge  = "session_age_seconds"
+	logKeyOAuthErrorCode = "oauth_error"
+	logMsgSessionRevoked = "go-vai-oidc: session revalidation refused by the IdP (invalid_grant) — signing out"
+	logMsgRevalidateSoft = "go-vai-oidc: session revalidation could not reach a verdict; session kept (fail-open)"
+	logMsgRevalidated    = "go-vai-oidc: session revalidated against the IdP"
+	logMsgRevalidateSkip = "go-vai-oidc: session carries no refresh token; revalidation skipped (fail-open)"
 )
 
 // Log component.

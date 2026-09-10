@@ -149,13 +149,59 @@ func TestClientIP(t *testing.T) {
 func TestSkipPaths(t *testing.T) {
 	a := &Auth{}
 	paths := a.SkipPaths()
-	assert.Equal(t, []string{"/login", "/callback", "/logout"}, paths)
+	assert.Equal(t, []string{"/login", "/callback", "/logout", "/session"}, paths)
 }
 
 func TestSkipPathsWithPrefix(t *testing.T) {
 	a := &Auth{}
 	paths := a.SkipPathsWithPrefix("/auth")
-	assert.Equal(t, []string{"/auth/login", "/auth/callback", "/auth/logout"}, paths)
+	assert.Equal(t, []string{"/auth/login", "/auth/callback", "/auth/logout", "/auth/session"}, paths)
+}
+
+// TestSkipPathsCoversEveryRegisteredRoute closes the loop the two pins above
+// cannot: they assert a LIST, and a list is only ever as current as the person
+// who last edited it.
+//
+// ⛔ THE FAILURE THIS CATCHES IS SILENT AND READS AS A DEAD SESSION. Every
+// consumer wires charonmw with `append(mine, auth.SkipPaths()...)`, so a route
+// Routes() registers and SkipPaths() omits is a route charonmw rejects before
+// the handler ever runs. For an auth route that is unrecoverable in the worst
+// way: the login endpoint would require a login, or — as of v0.19.0 — the
+// liveness endpoint would report every session dead, which under the client ping
+// is indistinguishable from the sign-out it exists to detect and would log the
+// whole fleet out on a timer.
+//
+// It walks the ACTUAL chi router rather than a description of it, so a route
+// added in Routes() is covered the day it lands.
+func TestSkipPathsCoversEveryRegisteredRoute(t *testing.T) {
+	a := &Auth{}
+
+	skip := make(map[string]bool, len(a.SkipPaths()))
+	for _, p := range a.SkipPaths() {
+		skip[p] = true
+	}
+
+	registered := make(map[string]bool)
+	err := chi.Walk(a.Routes(), func(_ string, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+		registered[route] = true
+		return nil
+	})
+	require.NoError(t, err)
+
+	// Refuse a vacuous pass: an empty walk would satisfy every assertion below
+	// while having examined nothing.
+	require.NotEmpty(t, registered, "chi.Walk found no routes — the guard examined nothing")
+
+	for route := range registered {
+		assert.True(t, skip[route],
+			"Routes() registers %q but SkipPaths() omits it. charonmw rejects the route before the handler runs, "+
+				"and an unreachable auth route fails in a way that reads as a broken session, not as a blocked request.", route)
+	}
+	for path := range skip {
+		assert.True(t, registered[path],
+			"SkipPaths() names %q but Routes() registers no such route — a skip entry for a path that does not exist "+
+				"widens what charonmw lets through, for nothing.", path)
+	}
 }
 
 // ---------------------------------------------------------------------------

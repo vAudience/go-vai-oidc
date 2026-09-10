@@ -55,6 +55,23 @@ var (
 	ErrTokenRefreshFailed = errors.New("vai-oidc: access token refresh failed")
 )
 
+// Session-revalidation errors (v0.19.0) — Option B of the "one logout" design.
+var (
+	// ErrSessionRevoked indicates the IdP explicitly refused this session's
+	// refresh token with `invalid_grant`. Keycloak returns that when the SSO
+	// session behind the token has ended — most commonly because the person
+	// signed out of a SIBLING product. It is the one refusal that means "this
+	// person is no longer signed in", as opposed to "the IdP could not answer
+	// right now", and it is therefore the only one the revalidation floor fails
+	// CLOSED on.
+	//
+	// ⛔ Deliberately distinct from ErrTokenRefreshFailed, which covers EVERY
+	// refresh failure including transport errors. Collapsing the two would make
+	// a single Keycloak blip sign the entire fleet out at once — the failure
+	// mode that makes revalidation more dangerous than the gap it closes.
+	ErrSessionRevoked = errors.New("vai-oidc: session revoked at the identity provider")
+)
+
 // Identity-gate errors — returned by the Config.RequireEmailDomain gate.
 var (
 	// ErrEmailDomainMismatch indicates the verified id_token's email

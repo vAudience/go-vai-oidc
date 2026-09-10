@@ -132,6 +132,37 @@ func (p *oidcProvider) refreshedToken(ctx context.Context, accessToken, refreshT
 	return fresh, nil
 }
 
+// forcedRefresh performs a `refresh_token` grant against the IdP UNCONDITIONALLY
+// and returns the resulting token set (v0.19.0).
+//
+// ⛔ IT EXISTS BECAUSE refreshedToken() CANNOT BE USED FOR REVALIDATION. That
+// function hands the stored access token to oauth2.TokenSource, whose documented
+// semantics are to return a still-valid token AS-IS WITH NO NETWORK CALL. Built
+// on it, a "revalidation" would answer "still signed in" from a purely local
+// expiry check for as long as the access token lives — which is exactly the
+// self-deceiving ping the design forbids: one that keeps the product session
+// alive while the IdP session dies underneath it, WIDENING the divergence it was
+// added to close.
+//
+// The mechanism is deliberate rather than incidental: an oauth2.Token whose
+// AccessToken is empty is never Valid(), so TokenSource always takes the refresh
+// path. The stored access token is not passed in at all — it is an output of
+// this call, never an input to it.
+//
+// The error is returned wrapped in ErrTokenRefreshFailed, with the underlying
+// *oauth2.RetrieveError still reachable via errors.As so the caller can tell an
+// IdP verdict from an IdP outage.
+func (p *oidcProvider) forcedRefresh(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
+	if refreshToken == "" {
+		return nil, fmt.Errorf("forced refresh: session carries no refresh token: %w", ErrTokenRefreshFailed)
+	}
+	fresh, err := p.oauth2Cfg.TokenSource(ctx, &oauth2.Token{RefreshToken: refreshToken}).Token()
+	if err != nil {
+		return nil, fmt.Errorf("forced refresh: %w", errors.Join(ErrTokenRefreshFailed, err))
+	}
+	return fresh, nil
+}
+
 // extractUser reads identity claims from a verified ID token.
 // Missing claims result in empty fields. Claims extraction failure is logged at debug level.
 // extraClaims specifies additional claim names to extract into User.Claims.

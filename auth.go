@@ -78,6 +78,12 @@ func (a *Auth) Routes() chi.Router {
 	r.Get(pathCallback, a.handleCallback)
 	r.Get(pathLogout, a.handleLogout)
 	r.Post(pathLogout, a.handleLogout)
+	// v0.19.0: session liveness, for a hidden tab's ping and an SPA's 401 trap.
+	// Registered UNCONDITIONALLY, even when RevalidateInterval is zero: the
+	// endpoint still answers truthfully about the local session, and a route
+	// whose existence depends on config is a route whose 404 the caller cannot
+	// tell apart from a signed-out answer.
+	r.Get(pathSession, a.handleSession)
 	return r
 }
 
@@ -120,10 +126,41 @@ func (a *Auth) RequireSession() func(http.Handler) http.Handler {
 				return
 			}
 
+			// v0.19.0: the revalidation floor. A cookie that decrypts and has not
+			// passed its own Exp is no longer sufficient — when the floor is
+			// configured and has elapsed, the IdP is asked whether this person is
+			// still signed in, and an explicit refusal is handled here rather than
+			// deferred to whatever the handler does with a stale identity.
+			payload, revErr := a.maybeRevalidate(w, r, payload)
+			if revErr != nil {
+				a.unauthenticated(w, r)
+				return
+			}
+
 			ctx := contextWithUser(r.Context(), payload.toUser())
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// unauthenticated turns a refused request into the same two answers
+// RequireSession gives a session-less one: a browser is sent to the login page
+// carrying its own deep link, an API client gets 401 JSON.
+//
+// It is a separate function because v0.19.0 gave RequireSession a SECOND refusal
+// path (a revoked session) and the two must stay identical — a revoked session
+// that produced a different answer from an absent one would be a second, subtly
+// divergent definition of "signed out".
+func (a *Auth) unauthenticated(w http.ResponseWriter, r *http.Request) {
+	if wantsBrowser(r) {
+		target := a.cfg.LoginPath
+		if rt := r.URL.RequestURI(); isValidRedirect(rt) {
+			target = appendQueryParam(target, queryParamRedirect, rt)
+		}
+		http.Redirect(w, r, target, http.StatusFound)
+		return
+	}
+	writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 }
 
 // OptionalSession returns middleware that sets User in context if a valid session exists,
@@ -132,6 +169,17 @@ func (a *Auth) OptionalSession() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			payload, err := readSessionCookie(r, a.sessionKey, a.cfg.CookieName)
+			if err == nil {
+				// v0.19.0: revalidate here too. ⛔ Leaving it out of the OPTIONAL
+				// path would be the more dangerous omission, not the safer one:
+				// this is the middleware every public-facing page runs under, so a
+				// signed-out person would keep being rendered as signed in — the
+				// "you are logged in as …" chrome, the account menu, the personalised
+				// content — on every product they never explicitly navigated a gated
+				// route in. A revoked session simply becomes an anonymous request,
+				// which is what OptionalSession already does with no session at all.
+				payload, err = a.maybeRevalidate(w, r, payload)
+			}
 			if err == nil {
 				ctx := contextWithUser(r.Context(), payload.toUser())
 				r = r.WithContext(ctx)
@@ -143,18 +191,32 @@ func (a *Auth) OptionalSession() func(http.Handler) http.Handler {
 
 // SkipPaths returns the auth route paths that should bypass charonmw.
 // Use with charonmw: append(mySkipPaths, auth.SkipPaths()...)
+//
+// ⚠️ pathSession joined this list in v0.19.0 WITH the route itself. An auth route
+// that charonmw does not skip is an auth route nobody can reach, and the symptom
+// — the liveness ping failing — is indistinguishable from the answer it exists to
+// give, so the ping would report every session dead and every product would sign
+// its users out on a timer.
 func (a *Auth) SkipPaths() []string {
-	return []string{pathLogin, pathCallback, pathLogout}
+	return []string{pathLogin, pathCallback, pathLogout, pathSession}
 }
 
 // SkipPathsWithPrefix returns the auth route paths prefixed with the given mount path.
 // Use when mounting at a custom prefix: auth.SkipPathsWithPrefix("/auth")
+//
+// ⛔ IT IS DERIVED FROM SkipPaths(), NOT A SECOND LIST. It was a hand-written
+// copy until v0.19.0, and adding pathSession is exactly the change that would
+// have been made in one of them and forgotten in the other — leaving every
+// consumer that mounts at a prefix (which is all of them, at "/auth") with a
+// liveness endpoint charonmw blocks, whose failure is indistinguishable from the
+// dead session it is meant to report.
 func (a *Auth) SkipPathsWithPrefix(prefix string) []string {
-	return []string{
-		prefix + pathLogin,
-		prefix + pathCallback,
-		prefix + pathLogout,
+	base := a.SkipPaths()
+	out := make([]string, len(base))
+	for i, p := range base {
+		out[i] = prefix + p
 	}
+	return out
 }
 
 // UpdateSession reads the current session, applies the mutation function to the User,
@@ -243,9 +305,19 @@ func (a *Auth) IssueSession(w http.ResponseWriter, r *http.Request, user *User, 
 	// leaving inline-login (ROPC) sessions without their membership set (multi-org
 	// pickers broke) and without realm roles. IDToken + Exp are session-only (not
 	// on User), so they are set directly and fromUser preserves them.
+	// v0.19.0: the caller's alternate grant (ROPC) was itself an IdP
+	// interaction, so the anchor is recorded here too.
+	//
+	// ⚠️ A SESSION ISSUED THIS WAY IS STILL UNREVALIDATABLE: this entry point
+	// takes no refresh token, so the floor will find nothing to ask with and
+	// will fail OPEN for the whole life of the cookie. A consumer that wants
+	// sign-out propagation on its inline-login path must either stop using it or
+	// gain a way to hand the refresh token over.
+	issuedAt := time.Now().UTC()
 	payload := &sessionPayload{
-		IDToken: rawIDToken,
-		Exp:     time.Now().UTC().Add(a.cfg.SessionTTL).Unix(),
+		IDToken:       rawIDToken,
+		Exp:           issuedAt.Add(a.cfg.SessionTTL).Unix(),
+		LastValidated: issuedAt.Unix(),
 	}
 	payload.fromUser(user)
 	return setSessionCookie(w, payload, a.sessionKey, a.cfg.CookieName, a.cfg.CookiePath, a.cfg.secureCookie(), a.logger)
@@ -525,9 +597,15 @@ func (a *Auth) handleCallback(w http.ResponseWriter, r *http.Request) {
 	// leaving multi-org pickers without their membership set. IDToken + Exp are
 	// session-only (not on User), so they are set directly and fromUser preserves
 	// them.
+	// v0.19.0: the code exchange that produced this session IS an IdP
+	// interaction, so the session starts with the IdP's word for it and the
+	// anchor is RECORDED rather than derived. validationAnchor's fallback stays
+	// for sessions that predate this field, but no session minted here needs it.
+	issuedAt := time.Now().UTC()
 	payload := &sessionPayload{
-		IDToken: rawIDToken,
-		Exp:     time.Now().UTC().Add(a.cfg.SessionTTL).Unix(),
+		IDToken:       rawIDToken,
+		Exp:           issuedAt.Add(a.cfg.SessionTTL).Unix(),
+		LastValidated: issuedAt.Unix(),
 	}
 	payload.fromUser(user)
 
@@ -676,6 +754,73 @@ func appendQueryParam(rawURL, key, value string) string {
 	q.Set(key, value)
 	u.RawQuery = q.Encode()
 	return u.String()
+}
+
+// SessionStatus is the JSON body of GET <mount>/session (v0.19.0).
+//
+// It is deliberately thin. The endpoint answers ONE question — is this browser
+// still signed in — and is designed to be polled from a background tab, so it
+// carries no profile, no claims and no tokens: a liveness probe that leaks
+// identity is one an XSS can use as an oracle, and one nobody can cache-control
+// their way out of.
+type SessionStatus struct {
+	// Authenticated is the answer. False is served with HTTP 401 so a caller
+	// that only reads the status code is never misled by a 200.
+	Authenticated bool `json:"authenticated"`
+
+	// Sub is the OIDC subject, present only when Authenticated. It lets a client
+	// notice that the session it is holding belongs to a DIFFERENT person —
+	// which happens when someone signs in as another user in a second tab — and
+	// reload rather than render one person's data under another's name.
+	Sub string `json:"sub,omitempty"`
+
+	// ExpiresAt is the session cookie's expiry (unix seconds). Under a
+	// configured revalidation floor this SLIDES on every successful
+	// revalidation, so a client must re-read it rather than compute a deadline
+	// once at login.
+	ExpiresAt int64 `json:"expires_at,omitempty"`
+
+	// RevalidatedAt is when the IdP last confirmed this session (unix seconds),
+	// or 0 when the floor is off or the session predates it.
+	//
+	// ⚠️ IT IS THE HONEST BOUND ON THIS ANSWER, and clients should read it as
+	// such: liveness is only ever as fresh as the floor. A ping that arrives
+	// before the floor elapses is answered from the cookie WITHOUT asking the
+	// IdP, so a 200 here means "signed in as of RevalidatedAt", never "signed in
+	// as of now". Nothing in a stateless design can promise the stronger claim.
+	RevalidatedAt int64 `json:"revalidated_at,omitempty"`
+}
+
+// handleSession reports whether the browser's session is still live, running the
+// same revalidation floor RequireSession does (v0.19.0).
+//
+// This is what a hidden tab pings so a sign-out in a SIBLING product reaches
+// this one within a floor's interval, and what an SPA's 401 trap consults before
+// deciding whether to navigate to login.
+//
+// ⛔ IT MUST NOT BE CACHED, and the header is not decoration: a liveness answer
+// served from a cache is a stale answer to the only question the endpoint is
+// asked, and the failure is silent in the dangerous direction — a cached
+// `authenticated: true` keeps a signed-out browser looking signed in for as long
+// as the cache lives, which is precisely the divergence this closes.
+func (a *Auth) handleSession(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set(headerCacheControl, cacheControlNoStore)
+
+	payload, err := readSessionCookie(r, a.sessionKey, a.cfg.CookieName)
+	if err == nil {
+		payload, err = a.maybeRevalidate(w, r, payload)
+	}
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, SessionStatus{Authenticated: false})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, SessionStatus{
+		Authenticated: true,
+		Sub:           payload.Sub,
+		ExpiresAt:     payload.Exp,
+		RevalidatedAt: payload.LastValidated,
+	})
 }
 
 // handleLogout clears the session and redirects to Keycloak's end-session endpoint.
