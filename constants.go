@@ -166,6 +166,56 @@ const (
 	// Only a request that travels through the BROWSER carries the browser's
 	// Keycloak cookie, and only that can see who is signed in now.
 	pathSessionSync = "/session/sync"
+
+	// pathSessionSyncScript serves the BROWSER half of session sync (v0.21.0).
+	//
+	// ⛔ IT IS SERVED BY THE LIBRARY BECAUSE THE ALTERNATIVE WAS NINE COPIES OF
+	// ONE FILE, and the browser half is the half with no server-side signal. A
+	// consumer's whole client-side opt-in is one <script src> tag naming this
+	// path under its own auth mount.
+	//
+	// ⚠️ The ".js" suffix is load-bearing twice: it is what makes the route
+	// distinct from pathSessionSync itself, and it is what handleSessionSyncScript
+	// trims to recover the consumer's mount.
+	pathSessionSyncScript = "/session/sync.js"
+
+	// pathSessionSyncBlocked receives the one report the browser half can make
+	// about its own failure (v0.21.0).
+	//
+	// ⭐ EVERY WAY SESSION SYNC CAN FAIL IN A BROWSER IS OTHERWISE CONSOLE-ONLY —
+	// a missing `frame-src` directive, a consumer middleware overwriting the sync
+	// document's CSP, an X-Frame-Options header forbidding the frame. The product
+	// then serves the previous user with every server-side signal green. This
+	// endpoint is what turns that into a log line somebody can alert on.
+	pathSessionSyncBlocked = "/session/sync/blocked"
+)
+
+// SessionSyncScriptSuffix is the path, relative to the consumer's auth mount, at
+// which the session-sync client script is served.
+//
+// ⛔ EXPORTED SO A CONSUMER COMPOSES ITS SCRIPT TAG RATHER THAN TRANSCRIBING THE
+// PATH. A hand-written "/auth/session/sync.js" in a template is a copy of a
+// route this package owns, and the failure of getting it wrong is a 404 loaded
+// by a <script> tag, which reports nothing anywhere.
+const SessionSyncScriptSuffix = pathSessionSyncScript
+
+// Session-sync script templating (v0.21.0). The tokens are replaced with JS
+// string literals at serve time; they are deliberately not valid JavaScript, so
+// an unreplaced token is a syntax error in a browser console rather than a
+// script that silently reconciles against the wrong path.
+const (
+	scriptTokenSyncEndpoint    = "__VAIOIDC_SYNC_ENDPOINT__"
+	scriptTokenBlockedEndpoint = "__VAIOIDC_BLOCKED_ENDPOINT__"
+
+	headerContentType         = "Content-Type"
+	contentTypeJavaScript     = "application/javascript; charset=utf-8"
+	headerXContentTypeOptions = "X-Content-Type-Options"
+	contentTypeOptionsNoSniff = "nosniff"
+
+	// reasonSyncBlocked names the ONE thing the browser can tell us, in the words
+	// of the thing an operator must then check. The browser cannot know WHICH of
+	// the blocking causes applied — it only knows no verdict ever arrived.
+	reasonSyncBlocked = "the sync iframe reached no verdict; check the parent page's CSP frame-src and X-Frame-Options"
 )
 
 // Session revalidation (v0.19.0) — Option B of docs/PORTAL-ONE-LOGOUT.md.
@@ -408,4 +458,12 @@ const (
 	logMsgSyncUnchanged  = "go-vai-oidc: session sync confirmed the browser identity is unchanged"
 	logMsgSyncSoft       = "go-vai-oidc: session sync could not reach a verdict; session kept (fail-open)"
 	logMsgSyncStart      = "go-vai-oidc: session sync starting a silent authorization request"
+	// ⭐ logMsgSyncBlocked is the browser half's only voice. It is WARN, not Info:
+	// a product reporting this is a product where a signed-out person keeps a
+	// working session, which is the condition this whole feature exists to end.
+	logMsgSyncBlocked = "go-vai-oidc: a browser gave up on session sync without ever reaching a verdict"
+	// logMsgSyncScriptPath fires when the script route cannot recover the mount it
+	// was served from — refused rather than guessed, because a guessed endpoint
+	// produces a script that loads, runs, and reconciles nothing.
+	logMsgSyncScriptPath = "go-vai-oidc: session sync script served from an unusable path; refusing to guess the mount"
 )
