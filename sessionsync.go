@@ -340,6 +340,7 @@ func (a *Auth) writeSyncResult(w http.ResponseWriter, result SessionSyncResult) 
 	}
 
 	w.Header().Set(headerCacheControl, cacheControlNoStore)
+	w.Header().Set(headerXFrameOptions, xFrameOptionsSameOrigin)
 	if nonce != "" {
 		w.Header().Set(headerCSP, fmt.Sprintf(syncCSPTemplate, nonce))
 	}

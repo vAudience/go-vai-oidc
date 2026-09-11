@@ -321,6 +321,29 @@ const (
 
 	headerCSP = "Content-Security-Policy"
 
+	// headerXFrameOptions / xFrameOptionsSameOrigin are set on the sync document
+	// because the consumer's own security middleware almost certainly denied it
+	// already.
+	//
+	// ⛔ FOUND BY INTEGRATING, NOT BY READING: werkzeuge — the first consumer —
+	// sets `X-Frame-Options: DENY` on EVERY response from a global middleware.
+	// That header is legacy and absolute: it outranks nothing, but nothing
+	// overrides it either, so the browser refuses to render this document in a
+	// frame AT ALL — including a frame on its own origin, created by the very
+	// page the header is protecting. ⚠️ And the refusal is reported to a browser
+	// console and NOWHERE ELSE (DC-PORTAL-ALPINECSP-01's class), so the sync
+	// would simply never report, on every product, with every server-side signal
+	// green.
+	//
+	// The library wins because a handler writes headers AFTER the middleware
+	// that wrapped it. ⚠️ SAMEORIGIN, never a removal: this document must still
+	// be unframeable by a foreign origin, which is also what its own
+	// `frame-ancestors 'self'` says. The two agree deliberately — the modern
+	// directive is the real control and this is the floor for anything still
+	// reading the legacy header.
+	headerXFrameOptions     = "X-Frame-Options"
+	xFrameOptionsSameOrigin = "SAMEORIGIN"
+
 	// syncNonceBytes sizes the per-response CSP nonce.
 	syncNonceBytes = 16
 

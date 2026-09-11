@@ -416,6 +416,13 @@ func TestSyncResultDocument_ReportsTwice(t *testing.T) {
 	assert.Equal(t, cacheControlNoStore, rec.Header().Get(headerCacheControl),
 		"a cached verdict is a stale answer to the only question this endpoint is asked")
 
+	// ⛔ The first consumer sets X-Frame-Options: DENY on every response from a
+	// global middleware. The header is absolute and console-only when it fires,
+	// so without this the sync would never report — on every product, with every
+	// server-side signal green.
+	assert.Equal(t, xFrameOptionsSameOrigin, rec.Header().Get(headerXFrameOptions),
+		"the document must overrule a consumer-wide X-Frame-Options: DENY, or it can never be framed")
+
 	// The nonce in the header must be the one the script carries, or the browser
 	// refuses the script and the postMessage never fires — silently.
 	nonce := csp[strings.Index(csp, "nonce-")+len("nonce-"):]

@@ -229,6 +229,21 @@ gone, so the reload renders the product's own signed-out state. ⛔ Do **not** a
 `/auth/login` on `switched` — that silently adopts the new identity, which is exactly the surprise
 this reports instead of performing.
 
+### ⛔ Two CSP facts that will otherwise make this fail silently
+
+The sync document overrules a consumer-wide `X-Frame-Options: DENY` (it sets `SAMEORIGIN` on its
+own response) and serves its own `Content-Security-Policy` with a per-response nonce. **Neither of
+those can fix the parent page's policy, and the parent page has one job:**
+
+- ⛔ **Your CSP needs `frame-src 'self' https://<your-provider-origin>`.** The iframe starts
+  same-origin, but it *navigates to the provider and back*, and CSP checks every navigation in the
+  frame. With no `frame-src`, `default-src 'self'` applies and the provider hop is **blocked**.
+  ⚠️ Derive that origin from the OIDC issuer you already configure — do not hardcode a hostname, or
+  the CSP becomes a second producer of a public URL that a rename silently breaks.
+- ⚠️ **A blocked frame reports to a browser console and nowhere else.** There is no server-side
+  signal, no 4xx, no log line: sync would simply never report, on every page, with every health
+  check green. Verify in a real browser with the console open, once, per product.
+
 ### Three things to get right before enabling it
 
 - ⛔ **Only `login_required` and its siblings sign the user out.** `interaction_required`,
