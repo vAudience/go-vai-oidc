@@ -238,8 +238,11 @@ those can fix the parent page's policy, and the parent page has one job:**
 - ⛔ **Your CSP needs `frame-src 'self' https://<your-provider-origin>`.** The iframe starts
   same-origin, but it *navigates to the provider and back*, and CSP checks every navigation in the
   frame. With no `frame-src`, `default-src 'self'` applies and the provider hop is **blocked**.
-  ⚠️ Derive that origin from the OIDC issuer you already configure — do not hardcode a hostname, or
-  the CSP becomes a second producer of a public URL that a rename silently breaks.
+  ⭐ Use **`auth.AuthorizationOrigin()`** (v0.20.2) for that value — never the `KeycloakURL` you
+  configured. Where services reach the provider through a cluster-internal name while the provider
+  stamps public URLs into its own discovery document, the configured URL names a host the browser
+  never visits, and the resulting CSP blocks the frame with every server-side signal green. An empty
+  return means "do not enable session sync", never "no restriction needed".
 - ⚠️ **A blocked frame reports to a browser console and nowhere else.** There is no server-side
   signal, no 4xx, no log line: sync would simply never report, on every page, with every health
   check green. Verify in a real browser with the console open, once, per product.

@@ -64,6 +64,7 @@ import (
 	"html"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -369,4 +370,38 @@ func syncNonce() (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// AuthorizationOrigin returns the scheme://host[:port] the browser is sent to
+// when a login or a session sync begins — the origin of the provider's
+// `authorization_endpoint` as DISCOVERED, not as configured.
+//
+// ⛔ IT EXISTS BECAUSE A CONSUMER'S CSP NEEDS THIS EXACT VALUE AND CANNOT DERIVE
+// IT SAFELY. `SessionSyncEnabled` requires `frame-src 'self' <this>` on the
+// PARENT page, or the iframe's hop to the provider is blocked — silently, in a
+// browser console and nowhere else. The obvious consumer-side derivation is the
+// configured `KeycloakURL`, and on a fleet where services reach the provider
+// through a cluster-internal Service name while the provider stamps PUBLIC URLs
+// into its own discovery document, that value is WRONG and its wrongness is
+// invisible: the CSP would name a host the browser never visits, and the frame
+// would be blocked with every server-side signal green.
+//
+// ⚠️ It returns "" when the authorization endpoint is unparseable or absent
+// rather than guessing. A consumer must treat "" as "do not enable session
+// sync", never as "no restriction needed" — an empty entry in a CSP directive
+// is not a wildcard, but a consumer that formats it in blindly produces a
+// malformed policy, which browsers handle by ignoring the directive.
+func (a *Auth) AuthorizationOrigin() string {
+	if a == nil || a.provider == nil {
+		return ""
+	}
+	raw := a.provider.oauth2Cfg.Endpoint.AuthURL
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
 }

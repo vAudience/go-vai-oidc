@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.20.2 — 2026-09-11
+
+**`Auth.AuthorizationOrigin()`** — the scheme://host the browser is actually sent to, read from the
+DISCOVERED authorization endpoint.
+
+⛔ It exists because `SessionSyncEnabled` requires `frame-src 'self' <provider origin>` on the
+consumer's own pages, and the obvious consumer-side derivation — the configured `KeycloakURL` — is
+WRONG on this fleet and invisibly so: services reach Keycloak through a cluster-internal Service
+name while Keycloak stamps PUBLIC URLs into its own discovery document (`--hostname=https://auth.…`,
+DC-PORTAL-HOSTARG-01). A CSP built from the configured URL would name a host the browser never
+visits, the iframe's provider hop would be blocked, and the only report would be a browser console.
+
+⚠️ Returns "" rather than guessing when the endpoint is absent or unparseable. A consumer must read
+"" as "do not enable session sync", never as "no restriction needed".
+
+⛔ **The first guard for this was VACUOUS and the mutation SURVIVED**: the fixture served discovery
+and the authorization endpoint from ONE host, so reading the configured URL gave an identical
+answer. That is the production shape inverted — the two differ in the fleet and agree only in a lazy
+fixture. The fixture now uses two hosts and the mutation is caught.
+
+
 ## v0.20.1 — 2026-09-11
 
 **The sync document could never have been framed, and nothing server-side would have said so.**
