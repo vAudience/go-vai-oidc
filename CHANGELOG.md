@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.20.1 — 2026-09-11
+
+**The sync document could never have been framed, and nothing server-side would have said so.**
+Found by integrating v0.20.0 against its first consumer rather than by reading it.
+
+werkzeuge sets `X-Frame-Options: DENY` on every response from a global security middleware. That
+header is legacy and absolute — the browser refuses to render the document in a frame AT ALL,
+including a frame on its own origin created by the very page the header protects. ⚠️ And the refusal
+is reported to a browser console and NOWHERE ELSE, so session sync would simply never report, on
+every product, with every server-side signal green.
+
+The sync response now sets `X-Frame-Options: SAMEORIGIN`, which wins because a handler writes
+headers after the middleware that wrapped it. ⚠️ SAMEORIGIN, never a removal: the document must
+still be unframeable by a foreign origin, which is also what its own `frame-ancestors 'self'` says.
+Mutation-verified.
+
+⛔ **The consumer half cannot be fixed from here and is now loud in the README**: the parent page's
+CSP needs `frame-src 'self' https://<provider-origin>`, because the iframe *navigates to the
+provider and back* and CSP checks every navigation in a frame. With no `frame-src`, `default-src
+'self'` applies and the provider hop is blocked — silently, in the same console-only way.
+
+
 ## v0.20.0 — 2026-09-11
 
 **Signing in as somebody else is now noticed.** The identity half of the fleet's "one logout"
