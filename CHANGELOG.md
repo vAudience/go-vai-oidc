@@ -1,5 +1,63 @@
 # Changelog
 
+## v0.21.0 — 2026-09-11
+
+**The BROWSER half of session sync is now owned by the library**, and the one failure mode it has
+reports itself to a server log for the first time.
+
+### `GET <mount>/session/sync.js` — one owner for the client script
+
+v0.20.0 shipped the server half and left the client half to consumers. The first consumer wrote 158
+lines of JavaScript, and **eight more doors were queued to receive a copy of it**.
+
+⛔ **That is the worst possible place in this system for N hand-written producers.** The browser half
+is precisely the half with NO SERVER-SIDE SIGNAL: a copy that drifts, or one never updated when a
+verdict is added, fails in a browser console and nowhere else — on the product with the strictest
+CSP, which is the one most likely to need the fix. A consumer's whole client-side opt-in is now one
+`<script src>` tag, and a library fix reaches every door with a pin bump instead of nine hand-edits.
+
+⭐ **The endpoints inside the script are DERIVED FROM THE REQUEST PATH, never configured.** The path
+the browser used to fetch the script is, by construction, the path that resolves to this router, so
+trimming the known suffix yields the consumer's real mount whatever prefix it chose. A configured
+mount would be a second producer of a value the router already knows, and getting it wrong produces
+an iframe that loads a 404 and reports nothing.
+
+⛔ The derived prefix is **validated against a charset before it is templated into JavaScript**, and
+escaped on top of that. Every character the escaper handles is already refused by the validator —
+both exist because the alternative is a comment asserting that the other one is enough.
+
+⚠️ It assumes the browser-visible path equals the server-visible path. That holds here by decision
+(products are SUBDOMAINS, not paths), but a consumer behind a path-stripping proxy must not use it.
+
+⚠️ `SessionSyncScriptSuffix` is exported so a consumer COMPOSES its script tag rather than
+transcribing the route.
+
+### `POST <mount>/session/sync/blocked` — the signal the browser half never had
+
+⭐ **Every way session sync can fail in a browser is otherwise console-only**: a missing `frame-src`
+directive on the parent page, a consumer middleware that overwrites the sync document's CSP, an
+`X-Frame-Options` header forbidding the frame, a provider that renders instead of redirecting. Each
+leaves the product serving the PREVIOUS USER with every server-side signal green — the exact shape
+that cost this fleet two silent outages. After three consecutive runs that reach no verdict, the
+script stops and reports; the server logs one WARN naming what to check.
+
+⛔ **It requires a session to log anything.** An unauthenticated POST that writes a WARN line is a
+log-flooding primitive any page on the internet can aim at this origin, and a signed-in person is
+also the only population whose report means anything.
+
+⚠️ **It always answers 204**, session or not: a status code that discriminates tells an
+unauthenticated caller whether a cookie it holds is valid.
+
+### Notes
+
+- Both routes are registered UNCONDITIONALLY and both joined `SkipPaths()` **with** the routes
+  themselves — the recorded rule, because an auth route charonmw does not skip is an auth route
+  nobody can reach, and the symptom is indistinguishable from the feature not working.
+- 5 mutations, all caught, all compile-verified — including one that renames a template token so the
+  replacer silently no-ops, which every other test in the file is blind to on its own.
+- ⚠️ **A consumer still owns its CSP.** `frame-src 'self' <AuthorizationOrigin()>` lives on the
+  consumer's page and no library can write it. That is why the beacon exists.
+
 ## v0.20.2 — 2026-09-11
 
 **`Auth.AuthorizationOrigin()`** — the scheme://host the browser is actually sent to, read from the

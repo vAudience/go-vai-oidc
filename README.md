@@ -186,17 +186,47 @@ form — then compares the returned `sid`/`sub` with this product's own session 
 ⭐ **It requires nothing of the realm.** The silent request reuses this consumer's already-registered
 `CallbackURL`, so there is no new `redirectUris` entry, no client change and no migration.
 
-### Wiring it in the browser
+### Wiring it in the browser (v0.21.0 — one script tag)
 
-The endpoint is loaded in a hidden **same-origin** iframe. It reports its verdict twice — a
+⭐ **The library serves the client script.** Point a `<script>` tag at your own auth mount and you
+are done:
+
+```html
+<script defer src="/auth/session/sync.js"></script>
+```
+
+Compose that path from `vaioidc.SessionSyncScriptSuffix` rather than typing it, and the route and
+the tag cannot drift apart. The script derives both of its endpoints from the path it was served
+at, so it is correct at **any** mount prefix without being told what that prefix is.
+
+It runs on **focus**, on **visibilitychange**, and on a slow timer — the timer is an ADDITION, never
+the primary signal, because browsers throttle background timers. It also exposes
+`window.vaioidcSessionSync()` so an API client's 401 trap can reconcile before navigating to login.
+
+On `switched` or `signed_out` it calls `location.reload()`: the session cookie is already gone
+server-side, so the reload renders the product's own signed-out state. ⛔ It deliberately does **not**
+navigate to `/auth/login` on `switched` — that silently adopts the new identity, which is exactly
+the surprise this reports instead of performing. On `disabled` it stops permanently, because that is
+the server truthfully saying this deployment did not opt in.
+
+⭐ **If the frame is blocked, the script says so to your server.** After three consecutive runs that
+reach no verdict it stops and `POST`s to `<mount>/session/sync/blocked`, which logs one WARN naming
+what to check. That is the ONLY server-side signal any browser-side failure of this feature has —
+see the two CSP facts below for why it is needed. (The report requires a session, so it cannot be
+used to flood your logs, and it always answers 204 so it cannot be used to probe cookie validity.)
+
+⚠️ It assumes the browser-visible path equals the server-visible path. That is true unless a proxy
+strips your mount prefix; if one does, serve your own copy instead.
+
+<details>
+<summary>Writing your own client instead (pre-v0.21.0, or behind a path-stripping proxy)</summary>
+
+The endpoint is loaded in a hidden **same-origin** iframe and reports its verdict twice — a
 `postMessage` to `window.parent`, and `<html data-vaioidc-sync-result="…">` as a fallback for a
 consumer whose middleware overwrites `Content-Security-Policy` (which would strip the inline script
 *silently*, because a CSP violation is reported to a browser console and nowhere else).
 
 ```js
-// Reconcile this tab's identity with the browser's. Runs on focus, on any 401,
-// and on a slow timer — the timer is an ADDITION, never the primary signal,
-// because browsers throttle background timers.
 function vaiSessionSync() {
   const f = document.createElement("iframe");
   f.hidden = true;
@@ -221,13 +251,9 @@ function vaiSessionSync() {
 
 window.addEventListener("focus", vaiSessionSync);
 setInterval(vaiSessionSync, 5 * 60 * 1000);
-// and from your API client's 401 trap, before navigating to login.
 ```
 
-`location.reload()` is the right reaction to both closing verdicts: the session cookie is already
-gone, so the reload renders the product's own signed-out state. ⛔ Do **not** auto-navigate to
-`/auth/login` on `switched` — that silently adopts the new identity, which is exactly the surprise
-this reports instead of performing.
+</details>
 
 ### ⛔ Two CSP facts that will otherwise make this fail silently
 

@@ -90,6 +90,15 @@ func (a *Auth) Routes() chi.Router {
 	// feature is off it answers `disabled`, which is a truthful answer no caller
 	// acts on.
 	r.Get(pathSessionSync, a.handleSessionSync)
+	// v0.21.0: the BROWSER half, owned here rather than copied into every
+	// consumer. Registered unconditionally alongside the endpoint it drives — the
+	// script asks the endpoint whether the feature is on and stops on `disabled`,
+	// so a route that appeared and disappeared with config would only make the
+	// opt-in expressible in two places instead of one.
+	r.Get(pathSessionSyncScript, a.handleSessionSyncScript)
+	// v0.21.0: the report a blocked browser makes about itself. ⛔ This is the
+	// ONLY server-side signal any browser-side failure of session sync has.
+	r.Post(pathSessionSyncBlocked, a.handleSessionSyncBlocked)
 	return r
 }
 
@@ -204,7 +213,7 @@ func (a *Auth) OptionalSession() func(http.Handler) http.Handler {
 // give, so the ping would report every session dead and every product would sign
 // its users out on a timer.
 func (a *Auth) SkipPaths() []string {
-	return []string{pathLogin, pathCallback, pathLogout, pathSession, pathSessionSync}
+	return []string{pathLogin, pathCallback, pathLogout, pathSession, pathSessionSync, pathSessionSyncScript, pathSessionSyncBlocked}
 }
 
 // SkipPathsWithPrefix returns the auth route paths prefixed with the given mount path.
