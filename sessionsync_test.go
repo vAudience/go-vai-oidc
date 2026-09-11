@@ -464,3 +464,96 @@ func TestCallback_WithoutTheSyncMarkerTakesTheLoginPath(t *testing.T) {
 		"a login callback redirects; only the sync path renders a document")
 	assert.NotContains(t, rec.Body.String(), syncResultDataAttr)
 }
+
+// TestAuthorizationOrigin_ComesFromDiscoveryNotConfig pins the reason this
+// accessor exists. ⛔ A consumer's CSP needs the origin the BROWSER is sent to;
+// on a fleet where services reach the provider through a cluster-internal name
+// while the provider stamps public URLs into its own discovery document, the
+// configured KeycloakURL is the wrong answer and its wrongness is invisible.
+func TestAuthorizationOrigin_ComesFromDiscoveryNotConfig(t *testing.T) {
+	kc := newSyncKeycloak(t)
+	a := newSyncAuth(t, kc, true)
+
+	origin := a.AuthorizationOrigin()
+	require.NotEmpty(t, origin)
+	assert.Equal(t, kc.srv.URL, origin,
+		"the origin must be the discovered authorization endpoint's, which is what the browser visits")
+	assert.False(t, strings.HasSuffix(origin, "/"), "an origin carries no trailing slash")
+	assert.NotContains(t, origin, testIssuerPath, "an origin carries no path")
+
+	// It must agree with where the sync actually sends the browser, or the CSP
+	// it feeds names a host the frame never visits.
+	r := httptest.NewRequest(http.MethodGet, pathSessionSync, nil)
+	seedSession(t, a, r, syncTestSubA, syncTestSidOne)
+	rec := httptest.NewRecorder()
+	a.handleSessionSync(rec, r)
+	require.Equal(t, http.StatusFound, rec.Code)
+	assert.True(t, strings.HasPrefix(rec.Header().Get("Location"), origin),
+		"AuthorizationOrigin must prefix the URL the browser is actually redirected to")
+}
+
+// TestAuthorizationOrigin_DiffersFromTheConfiguredURL is the test that makes the
+// one above load-bearing.
+//
+// ⛔ A FIRST VERSION OF THIS GUARD WAS VACUOUS AND THE MUTATION SURVIVED: the
+// harness served discovery and the authorization endpoint from ONE host, so
+// reading the configured KeycloakURL instead of the discovered endpoint gave an
+// identical answer. That is the fleet's real shape inverted — services reach the
+// provider through a cluster-internal name while the provider stamps PUBLIC URLs
+// into its discovery document, so the two differ in production and agree only in
+// a lazy fixture. The fixture now makes them differ.
+func TestAuthorizationOrigin_DiffersFromTheConfiguredURL(t *testing.T) {
+	_, key := newTestKeycloak(t)
+
+	// The host the BROWSER is sent to. It serves nothing; only its origin matters.
+	public := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	t.Cleanup(public.Close)
+
+	var internal *httptest.Server
+	mux := http.NewServeMux()
+	mux.HandleFunc(testIssuerPath+wellKnownPath, func(w http.ResponseWriter, r *http.Request) {
+		issuer := internal.URL + testIssuerPath
+		// Every endpoint stays on the internal host EXCEPT the one the browser
+		// visits — which is exactly what a provider configured with a public
+		// hostname produces when its discovery document is fetched internally.
+		_, _ = fmt.Fprintf(w, `{"issuer":%q,"authorization_endpoint":%q,"token_endpoint":%q,`+
+			`"jwks_uri":%q,"id_token_signing_alg_values_supported":["RS256"]}`,
+			issuer,
+			public.URL+testIssuerPath+"/protocol/openid-connect/auth",
+			issuer+"/protocol/openid-connect/token",
+			issuer+jwksRoutePath)
+	})
+	mux.HandleFunc(testIssuerPath+jwksRoutePath, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(jwksDoc(key))
+	})
+	internal = httptest.NewServer(mux)
+	t.Cleanup(internal.Close)
+
+	a, err := New(context.Background(), Config{
+		KeycloakURL:        internal.URL,
+		Realm:              testRealm,
+		ClientID:           testClientID,
+		ClientSecret:       "irrelevant",
+		CallbackURL:        internal.URL + testCallback,
+		SessionSecret:      base64.StdEncoding.EncodeToString(bytes32()),
+		CookieName:         syncTestCookie,
+		SessionSyncEnabled: true,
+		Logger:             slog.New(slog.NewTextHandler(io.Discard, nil)),
+		InsecureCookie:     true,
+	})
+	require.NoError(t, err)
+
+	require.NotEqual(t, internal.URL, public.URL, "the fixture must actually distinguish the two hosts")
+	assert.Equal(t, public.URL, a.AuthorizationOrigin(),
+		"the origin must come from the DISCOVERED authorization endpoint, not the configured URL — "+
+			"a CSP built from the configured URL names a host the browser never visits, and the "+
+			"blocked frame is reported to a browser console and nowhere else")
+}
+
+func TestAuthorizationOrigin_EmptyRatherThanAGuess(t *testing.T) {
+	var nilAuth *Auth
+	assert.Empty(t, nilAuth.AuthorizationOrigin())
+	assert.Empty(t, (&Auth{}).AuthorizationOrigin(),
+		"no provider means no honest answer; a consumer must read \"\" as do-not-enable")
+}
