@@ -162,6 +162,29 @@ type Config struct {
 	// reachable on ordinary page loads rather than only on API-key minting.
 	RevalidateInterval time.Duration
 
+	// SessionSyncEnabled turns on the silent identity-reconciliation endpoint at
+	// <mount>/session/sync (v0.20.0). Default false, which is pre-v0.20.0
+	// behaviour exactly: the route exists and answers `disabled`, and no browser
+	// that does not embed the sync iframe ever reaches it.
+	//
+	// ⭐ IT ANSWERS A QUESTION RevalidateInterval STRUCTURALLY CANNOT, AND THE TWO
+	// ARE COMPLEMENTARY, NOT ALTERNATIVES. The revalidation floor is a
+	// SERVER-side check that asks "is the session this cookie was minted from
+	// still alive?" — it covers closed tabs and API traffic, and it is the only
+	// half that works without a browser. Session sync is a BROWSER-side check
+	// that asks "who is signed in HERE, right now?" — it is the only half that
+	// can see a person signing in as somebody else, because a refresh grant is
+	// bound to the old session and Keycloak keeps that session alive when a new
+	// one is created. Enable both.
+	//
+	// ⛔ IT REQUIRES NOTHING OF THE REALM. The silent request reuses this
+	// consumer's already-registered CallbackURL, so no `redirectUris` entry, no
+	// client change and no converger run is needed on any fleet.
+	//
+	// ⚠️ It does NOT require RetainTokens. A sync round trip mints its own tokens
+	// and discards them; the comparison is made on ID-token claims.
+	SessionSyncEnabled bool
+
 	// Optional: Email domain gate.
 	//
 	// When set, the OIDC callback rejects logins whose `email` claim's

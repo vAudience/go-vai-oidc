@@ -8,7 +8,9 @@ Dex, …).
 - **Any provider** — point it at an issuer URL; discovery does the rest.
 - **Stateless** — the verified user lives in an AES-256-GCM-encrypted cookie. No database, no Redis,
   no server-side session store. Optionally revalidated against the provider on a floor
-  (`RevalidateInterval`) so a sign-out elsewhere propagates — still with no store.
+  (`RevalidateInterval`) so a sign-out elsewhere propagates, and optionally reconciled against the
+  browser's own provider session (`SessionSyncEnabled`) so signing in as somebody else is noticed —
+  still with no store.
 - **Small surface** — `New()`, mount `Routes()`, protect handlers with `RequireSession()`, read the
   user with `UserFromContext()`.
 - **Pluggable identity** — an optional `UserResolver` callback runs at login to enrich the user
@@ -145,6 +147,100 @@ the interval.
 - ⚠️ **Sessions issued before retention was enabled carry no refresh token** and therefore fail open
   until they expire — a bounded transition window of at most one `SessionTTL`. Killing them instead
   would mean a library upgrade signs out everyone currently logged in.
+
+## Identity sync (v0.20.0) — the half revalidation cannot do
+
+`RevalidateInterval` above answers **liveness**: *is the session this cookie was minted from still
+alive?* It cannot answer **identity**: *who is signed in to this browser right now?* — and the
+difference is not academic:
+
+> Sign in as A on one product. Then sign in as B at the provider. The first product **keeps serving
+> A**, with revalidation enabled, passing, and correct.
+
+The refresh grant is bound to A's SSO session. Signing in as B mints a **new** session and swaps the
+browser's identity cookie; it does not terminate A's, which survives to its own idle timeout. So the
+grant asks *"is A alive?"*, the provider truthfully answers *"yes"*, and the refreshed tokens come
+back carrying A's `sub`. ⛔ **No interval fixes this.** Polling faster asks the same question more
+often and gets the same answer — the axis is the *question*, not the frequency.
+
+Only a request that travels through the **browser** carries the browser's provider cookie. That is
+what `SessionSyncEnabled` adds:
+
+```go
+cfg.SessionSyncEnabled = true   // enables GET <mount>/session/sync
+```
+
+`GET <mount>/session/sync` performs an authorization request with `prompt=none` — the provider
+answers from the browser's current SSO session or refuses explicitly, and never renders a login
+form — then compares the returned `sid`/`sub` with this product's own session and reports one of:
+
+| Result | Meaning | Session |
+|---|---|---|
+| `unchanged` | same person, same sign-in | re-stamped (slides, like a revalidation) |
+| `switched` | a **different** identity, or the same person in a new sign-in | **cleared** |
+| `signed_out` | the provider has no session in this browser | **cleared** |
+| `no_session` | this product had no session to reconcile | untouched |
+| `disabled` | `SessionSyncEnabled` is false | untouched |
+| `error` | no verdict could be reached | untouched (**fails open**) |
+
+⭐ **It requires nothing of the realm.** The silent request reuses this consumer's already-registered
+`CallbackURL`, so there is no new `redirectUris` entry, no client change and no migration.
+
+### Wiring it in the browser
+
+The endpoint is loaded in a hidden **same-origin** iframe. It reports its verdict twice — a
+`postMessage` to `window.parent`, and `<html data-vaioidc-sync-result="…">` as a fallback for a
+consumer whose middleware overwrites `Content-Security-Policy` (which would strip the inline script
+*silently*, because a CSP violation is reported to a browser console and nowhere else).
+
+```js
+// Reconcile this tab's identity with the browser's. Runs on focus, on any 401,
+// and on a slow timer — the timer is an ADDITION, never the primary signal,
+// because browsers throttle background timers.
+function vaiSessionSync() {
+  const f = document.createElement("iframe");
+  f.hidden = true;
+  f.src = "/auth/session/sync";
+  const done = (result) => {
+    f.remove();
+    if (result === "switched" || result === "signed_out") location.reload();
+  };
+  const onMsg = (e) => {
+    if (e.origin !== location.origin) return;              // same-origin only
+    if (e.data?.source !== "vaioidc" || e.data?.type !== "session-sync") return;
+    window.removeEventListener("message", onMsg);
+    done(e.data.result);
+  };
+  window.addEventListener("message", onMsg);
+  f.onload = () => {                                        // fallback path
+    try { done(f.contentDocument.documentElement.dataset.vaioidcSyncResult); }
+    catch { /* still mid-flight on the provider's origin */ }
+  };
+  document.body.appendChild(f);
+}
+
+window.addEventListener("focus", vaiSessionSync);
+setInterval(vaiSessionSync, 5 * 60 * 1000);
+// and from your API client's 401 trap, before navigating to login.
+```
+
+`location.reload()` is the right reaction to both closing verdicts: the session cookie is already
+gone, so the reload renders the product's own signed-out state. ⛔ Do **not** auto-navigate to
+`/auth/login` on `switched` — that silently adopts the new identity, which is exactly the surprise
+this reports instead of performing.
+
+### Three things to get right before enabling it
+
+- ⛔ **Only `login_required` and its siblings sign the user out.** `interaction_required`,
+  `consent_required` and `account_selection_required` join it; everything else — a transport
+  failure, a 5xx, `invalid_client` from a rotated secret, a state mismatch — fails **open**. The
+  classification is what stops this mechanism from logging out every product at once.
+- ⛔ **An absent `sid` is not a mismatch.** Sessions minted before v0.20.0 carry none, and treating
+  absent as different would sign out every logged-in user on the first sync after an upgrade. The
+  comparison degrades to `sub` and the session records its `sid` on that first sync.
+- ⚠️ **Enable it alongside `RevalidateInterval`, not instead of it.** Sync needs a live browser, so
+  it does nothing for a closed tab or for API traffic; the revalidation floor is the only half that
+  covers those. They answer different questions.
 
 ## The User
 
@@ -287,6 +383,10 @@ vaioidc.Config{
                                        // than SessionTTL; New() refuses both, because an interval
                                        // that silently does nothing is indistinguishable from one
                                        // that works. See "Sign-out propagation" below.
+    SessionSyncEnabled   bool          // enable GET <mount>/session/sync — a browser-side check of
+                                       // WHO is signed in, which RevalidateInterval structurally
+                                       // cannot answer (default false = pre-v0.20.0). Needs no realm
+                                       // change. See "Identity sync" below.
     RequireEmailDomain   string        // reject logins whose email domain != this
     DiscoveryRetryBudget time.Duration // retry cold-boot discovery failures (default 90s; <0 disables)
     IssuerURLOverride    string        // accept a different iss than the discovery URL (see below)

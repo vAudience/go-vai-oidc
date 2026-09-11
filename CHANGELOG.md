@@ -1,5 +1,100 @@
 # Changelog
 
+## v0.20.0 — 2026-09-11
+
+**Signing in as somebody else is now noticed.** The identity half of the fleet's "one logout"
+design (§C of `docs/PORTAL-ONE-LOGOUT.md`), and the answer to a live walk that found the previous
+release working exactly as designed while the operator watched two products serve two different
+people.
+
+Additive: `SessionSyncEnabled` defaults to false, which is pre-v0.20.0 behaviour exactly. A
+consumer that changes nothing performs no new network calls and behaves identically.
+
+### The gap v0.19.0 could not close
+
+v0.19.0 made a product session DERIVED from the provider session by asking the token endpoint, on a
+floor, whether the session behind the cookie was still alive. That answers **liveness**. It cannot
+answer **identity**:
+
+> sign in as A on one product, then sign in as B at the provider, and the first product keeps
+> serving A — with revalidation enabled, passing, and correct.
+
+The refresh grant is bound to A's SSO session. Signing in as B mints a NEW session and swaps the
+browser's identity cookie; it does not terminate A's, which survives to its own idle timeout. So the
+floor asks *"is A alive?"*, Keycloak truthfully answers *"yes"*, and the refreshed tokens come back
+carrying A's `sub`.
+
+⛔ **NO INTERVAL FIXES THIS, and that is the finding worth carrying.** Polling faster asks the same
+question more often and gets the same answer; it also multiplies token-endpoint load and makes the
+fail-open classification far more dangerous under an outage. The axis is the QUESTION, not the
+frequency.
+
+### The mechanism
+
+Only a request that travels through the BROWSER carries the browser's provider cookie. An
+authorization request with `prompt=none` is exactly that: the provider answers from the browser's
+current SSO session or refuses explicitly, and never renders a login form.
+
+```go
+cfg.SessionSyncEnabled = true   // GET <mount>/session/sync
+```
+
+Six verdicts, of which `switched` was previously unrepresentable anywhere in the fleet:
+`unchanged` · `switched` · `signed_out` · `no_session` · `disabled` · `error`.
+
+⭐ **It requires NOTHING of the realm.** The silent request reuses the consumer's already-registered
+`CallbackURL`. Every realm client in this fleet registers an EXACT redirect URI — not a wildcard —
+so a dedicated `/session/sync/callback` route would have been a nine-client realm migration coupled
+to a library release, on the one field measured as deciding whether a login works at all. The price
+is a marker cookie (`vai_oidc_sync`) and a dispatcher at the top of the shared callback; that trade
+is deliberate and is the first thing to re-examine if the callback grows a third mode.
+
+### The rules that make it safe rather than dangerous
+
+1. ⛔ **Fail CLOSED only on an explicit verdict.** `login_required`, `interaction_required`,
+   `consent_required` and `account_selection_required` are the provider saying "there is no session
+   here". A transport failure, a 5xx, a state mismatch, or `invalid_client` from a rotated secret is
+   the provider failing to answer — each fails OPEN. The enumeration is deliberately CLOSED: a
+   default-closed rule would turn every future provider error code into a fleet-wide logout.
+2. ⛔ **A mismatch CLEARS, it never re-mints.** A tab must not change owner underneath unsaved work.
+   The strictness costs the user nothing: the browser still holds the new SSO session, so their next
+   sign-in click returns without a credential prompt.
+3. ⛔ **An absent `sid` is NOT a mismatch.** Every session minted before v0.20.0 carries none, and
+   treating absent as different would sign out every logged-in user on the first sync after an
+   upgrade — a library bump presenting as a fleet-wide logout, the single worst failure this code
+   could have. The comparison degrades to `sub`, and the session self-heals its `sid` on that sync.
+
+### `sid` is the new field, and it is not an alias for `sub`
+
+`User.SessionID` and `sessionPayload.Sid` carry the provider's SSO session id (the ID token's `sid`
+claim). `sub` identifies the PERSON; `sid` identifies the SIGN-IN. A person who signs out and back
+in keeps their `sub` and gets a new `sid` — so every product still holding a cookie from the OLD
+sign-in holds a session the provider no longer knows about, which `sub` alone can never reveal.
+
+### The verdict document reports twice, on purpose
+
+A `postMessage` to `window.parent` (target origin derived from `window.location.origin`, never
+`"*"`), and `<html data-vaioidc-sync-result="…">`. The postMessage needs an inline script and
+therefore a CSP that permits it; the document serves its own minimal policy with a per-response
+nonce, but a consumer whose middleware OVERWRITES `Content-Security-Policy` strips that **silently**
+— a CSP violation is reported to a browser console and nowhere else. The data attribute needs no
+script and survives it.
+
+### Fixed on the way
+
+- ⛔ **`ClientVersion` read `go-vai-oidc/0.18.0` against a 0.19.0 manifest**, with its own guard
+  (`TestClientVersionMatchesTheManifest`) RED on `main`. v0.19.0 was tagged over a failing test, so
+  every obol request since has identified itself as the previous release. Now `0.20.0`.
+
+### Verification
+
+Eight mutations, each caught and each compile-verified: the `sid` comparison deleted; an absent
+`sid` treated as a mismatch; the error classification defaulted closed; `prompt=none` dropped; the
+postMessage target widened to `"*"`; a state mismatch made to sign out; the callback dispatcher
+inverted; the CSP nonce made constant. ⚠️ The naive form of the last one does not compile
+(`imported and not used`), which prints FAIL identically to a caught mutation — it was re-run in a
+compilable shape.
+
 ## v0.19.0 — 2026-09-10
 
 **Signing out of one product now signs you out of the others.** Option B of the fleet's "one logout"

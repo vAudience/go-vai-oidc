@@ -36,6 +36,17 @@ type User struct {
 	// Populated from Config.ExtraClaims. Non-string claim values are JSON-serialized.
 	Claims map[string]string `json:"claims,omitempty"`
 
+	// SessionID is Keycloak's SSO session id for the session this user was
+	// authenticated in (the ID token's `sid` claim, v0.20.0). Empty when the IdP
+	// does not issue it.
+	//
+	// ⛔ IT IS NOT AN ALIAS FOR Sub, AND THE DIFFERENCE IS THE WHOLE POINT. `sub`
+	// identifies the PERSON; `sid` identifies the SIGN-IN. A person who signs out
+	// and signs back in keeps their `sub` and gets a new `sid` — and every
+	// product still holding a cookie from the OLD sign-in is holding a session
+	// the IdP no longer knows about, which `sub` alone can never reveal.
+	SessionID string `json:"session_id,omitempty"`
+
 	// RealmRoles holds the Keycloak realm roles from the ID token's standard
 	// `realm_access.roles` claim, extracted unconditionally (no Config.ExtraClaims
 	// entry needed — this is a first-class field, like OrgID/Memberships). Nil

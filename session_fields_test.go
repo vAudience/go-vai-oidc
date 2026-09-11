@@ -148,5 +148,6 @@ func userToPayloadFieldNames() []struct{ user, payload string } {
 		{"Memberships", "Mbs"},
 		{"Claims", "Claims"},
 		{"RealmRoles", "Rls"},
+		{"SessionID", "Sid"},
 	}
 }

@@ -84,6 +84,12 @@ func (a *Auth) Routes() chi.Router {
 	// whose existence depends on config is a route whose 404 the caller cannot
 	// tell apart from a signed-out answer.
 	r.Get(pathSession, a.handleSession)
+	// v0.20.0: silent identity reconciliation. Registered UNCONDITIONALLY for the
+	// same reason pathSession is — a route whose existence depends on config is a
+	// route whose 404 the caller cannot tell apart from a verdict. When the
+	// feature is off it answers `disabled`, which is a truthful answer no caller
+	// acts on.
+	r.Get(pathSessionSync, a.handleSessionSync)
 	return r
 }
 
@@ -198,7 +204,7 @@ func (a *Auth) OptionalSession() func(http.Handler) http.Handler {
 // give, so the ping would report every session dead and every product would sign
 // its users out on a timer.
 func (a *Auth) SkipPaths() []string {
-	return []string{pathLogin, pathCallback, pathLogout, pathSession}
+	return []string{pathLogin, pathCallback, pathLogout, pathSession, pathSessionSync}
 }
 
 // SkipPathsWithPrefix returns the auth route paths prefixed with the given mount path.
@@ -464,7 +470,22 @@ func authCodeExtras(r *http.Request) map[string]string {
 }
 
 // handleCallback processes the OIDC callback from Keycloak.
+//
+// ⛔ TWO DIFFERENT ROUND TRIPS LAND HERE, AND THE MARKER COOKIE IS WHAT
+// SEPARATES THEM. A login callback mints a session; a session-sync callback
+// (v0.20.0) mints nothing and may CLEAR one. They share this URL because every
+// realm client in this fleet registers an EXACT redirect URI — see
+// cookieOIDCSync for why a second registered URI was refused as a cost.
 func (a *Auth) handleCallback(w http.ResponseWriter, r *http.Request) {
+	if _, err := r.Cookie(cookieOIDCSync); err == nil {
+		a.handleSyncCallback(w, r)
+		return
+	}
+	a.handleLoginCallback(w, r)
+}
+
+// handleLoginCallback is the authorization-code callback that MINTS a session.
+func (a *Auth) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 	// Read and clear OIDC cookies immediately.
 	stateCookie, err := r.Cookie(cookieOIDCState)
 	if err != nil {
