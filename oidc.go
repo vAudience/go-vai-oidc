@@ -183,6 +183,9 @@ func (p *oidcProvider) extractUser(idToken *gooidc.IDToken, logger *slog.Logger,
 	if name, ok := claims[claimName].(string); ok {
 		user.Name = name
 	}
+	if sid, ok := claims[claimSid].(string); ok {
+		user.SessionID = sid
+	}
 	user.RealmRoles = extractRealmRoles(claims)
 
 	// Extract extra claims into User.Claims map.

@@ -346,7 +346,7 @@ const headerObolClientVersion = "X-Obol-Client-Version"
 // module, which cannot carry it at all. So the honest answer to "which code
 // composed this request" is a version string this file owns, and it must be
 // bumped with versions.yaml (TestClientVersionMatchesTheManifest pins it).
-const ClientVersion = "go-vai-oidc/0.18.0"
+const ClientVersion = "go-vai-oidc/0.20.0"
 
 // admitLanding turns obol's landing object into a value the callback may act
 // on, or nil.

@@ -149,13 +149,13 @@ func TestClientIP(t *testing.T) {
 func TestSkipPaths(t *testing.T) {
 	a := &Auth{}
 	paths := a.SkipPaths()
-	assert.Equal(t, []string{"/login", "/callback", "/logout", "/session"}, paths)
+	assert.Equal(t, []string{"/login", "/callback", "/logout", "/session", "/session/sync"}, paths)
 }
 
 func TestSkipPathsWithPrefix(t *testing.T) {
 	a := &Auth{}
 	paths := a.SkipPathsWithPrefix("/auth")
-	assert.Equal(t, []string{"/auth/login", "/auth/callback", "/auth/logout", "/auth/session"}, paths)
+	assert.Equal(t, []string{"/auth/login", "/auth/callback", "/auth/logout", "/auth/session", "/auth/session/sync"}, paths)
 }
 
 // TestSkipPathsCoversEveryRegisteredRoute closes the loop the two pins above

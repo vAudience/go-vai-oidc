@@ -7,6 +7,19 @@ const (
 	defaultCookieName  = "vai_session"
 	cookieOIDCState    = "vai_oidc_state"
 	cookiePKCEVerifier = "vai_pkce_verifier"
+
+	// cookieOIDCSync marks an in-flight authorization round trip as a SESSION
+	// SYNC rather than a login (v0.20.0).
+	//
+	// ⛔ THE SYNC FLOW DELIBERATELY REUSES THE LOGIN CALLBACK URL, AND THIS
+	// COOKIE IS THE PRICE OF THAT. A dedicated `/session/sync/callback` route
+	// would have been a cleaner handler — but every realm client in this fleet
+	// registers its `redirectUris` as an EXACT string, not a wildcard, so a
+	// second redirect URI is a nine-client realm migration coupled to a library
+	// release, on the one field DC-PORTAL-REDIRECT-01 measured as the field that
+	// decides whether a login works at all. Reusing the registered callback URL
+	// makes this change need NO realm edit on either fleet.
+	cookieOIDCSync = "vai_oidc_sync"
 )
 
 // Cookie defaults.
@@ -62,6 +75,13 @@ const (
 	claimPreferredUsername = "preferred_username"
 	claimRealmAccess       = "realm_access"
 	claimRealmAccessRoles  = "roles"
+
+	// claimSid is Keycloak's SSO session id, present in ID tokens whenever the
+	// realm advertises `backchannel_logout_session_supported` (measured true on
+	// both fleets, 2026-09-11). It is what makes "the person signed in again as
+	// somebody else" distinguishable from "nothing changed" — `sub` alone cannot
+	// tell a NEW session for the SAME person from the original one.
+	claimSid = "sid"
 )
 
 // PKCE parameters.
@@ -131,6 +151,21 @@ const (
 	// reach, and the failure looks like a dead session rather than a blocked
 	// request.
 	pathSession = "/session"
+
+	// pathSessionSync is the silent identity-reconciliation endpoint added in
+	// v0.20.0 (§C of the fleet's docs/PORTAL-ONE-LOGOUT.md). A browser loads it
+	// in a hidden same-origin iframe; it performs an OIDC authorization request
+	// with `prompt=none` and reports whether the browser's CURRENT Keycloak
+	// session is the same one this product's cookie was minted from.
+	//
+	// ⛔ IT ANSWERS A QUESTION THE REVALIDATION FLOOR STRUCTURALLY CANNOT. The
+	// floor asks the token endpoint "is session A still alive?" using a refresh
+	// token bound to session A — so when a person signs in as somebody else,
+	// Keycloak mints a NEW session, leaves A alive to its own idle timeout, and
+	// answers "yes". The refreshed tokens even come back carrying A's `sub`.
+	// Only a request that travels through the BROWSER carries the browser's
+	// Keycloak cookie, and only that can see who is signed in now.
+	pathSessionSync = "/session/sync"
 )
 
 // Session revalidation (v0.19.0) — Option B of docs/PORTAL-ONE-LOGOUT.md.
@@ -242,4 +277,112 @@ const (
 	logMsgLandingRedirect            = "OIDC callback: identity backend decided the landing destination"
 	logReasonEmailDomainMismatch     = "email_domain_mismatch"
 	logReasonEmailDomainMissingClaim = "email_claim_missing_or_malformed"
+)
+
+// Session sync (v0.20.0) — §C of docs/PORTAL-ONE-LOGOUT.md.
+const (
+	// queryParamPrompt / promptNone request a SILENT authorization: Keycloak
+	// answers from the browser's existing SSO cookie or refuses, and never
+	// renders a login form. Rendering one would be fatal here — the request runs
+	// inside a hidden iframe, so an interactive prompt is an invisible dead end.
+	queryParamPrompt = "prompt"
+	promptNone       = "none"
+
+	// cookieSyncMarkerValue is the sync cookie's only meaningful value. Its
+	// PRESENCE is the signal; the value exists so the cookie is well-formed.
+	cookieSyncMarkerValue = "1"
+
+	// oauthErrorLoginRequired and its siblings are the IdP's EXPLICIT verdict
+	// that `prompt=none` could not be satisfied without user interaction — i.e.
+	// there is no usable SSO session in this browser. ⛔ These are the only
+	// codes that fail CLOSED, by the same rule that makes `invalid_grant` the
+	// only closing code for the revalidation floor: every other refusal is the
+	// IdP failing to answer, and acting on those turns one Keycloak blip into a
+	// synchronized fleet-wide logout.
+	oauthErrorLoginRequired            = "login_required"
+	oauthErrorInteractionRequired      = "interaction_required"
+	oauthErrorConsentRequired          = "consent_required"
+	oauthErrorAccountSelectionRequired = "account_selection_required"
+
+	// syncCSP is the Content-Security-Policy the sync result document serves
+	// ITSELF under.
+	//
+	// ⛔ IT IS NOT INHERITED FROM THE CONSUMER, DELIBERATELY. This fleet has
+	// already shipped two total, invisible outages caused by a CSP that forbade
+	// what the page needed (DC-PORTAL-ALPINECSP-01, DC-PORTAL-ASSETCSP-01), and
+	// a violation is reported to a browser console and NOWHERE ELSE — so a
+	// sync document relying on the consumer's policy would fail silently on
+	// whichever product had the strictest one, and report nothing anywhere.
+	// The document therefore carries its own minimal policy and a per-response
+	// nonce. ⚠️ A consumer whose middleware OVERWRITES Content-Security-Policy on
+	// every response defeats this; the data-attribute fallback below exists so
+	// the parent can still read a result when that happens.
+	syncCSPTemplate = "default-src 'none'; script-src 'nonce-%s'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
+
+	headerCSP = "Content-Security-Policy"
+
+	// syncNonceBytes sizes the per-response CSP nonce.
+	syncNonceBytes = 16
+
+	// syncMessageSource / syncMessageType namespace the postMessage payload so a
+	// parent page hosting several iframes can tell this one's messages apart.
+	syncMessageSource = "vaioidc"
+	syncMessageType   = "session-sync"
+
+	// syncResultDataAttr is the DOM fallback: the result is also written to
+	// <html data-vaioidc-sync-result="...">, readable by a SAME-ORIGIN parent
+	// through iframe.contentDocument even when the postMessage never arrives
+	// (a consumer CSP overwrite, a listener attached too late).
+	syncResultDataAttr = "data-vaioidc-sync-result"
+)
+
+// SessionSyncResult is the verdict of one silent identity reconciliation.
+// It is a string rather than an enum int so it survives a postMessage, a log
+// line and a JSON body unchanged.
+type SessionSyncResult string
+
+const (
+	// SessionSyncUnchanged: the browser is signed in as the same person, in the
+	// same Keycloak session. The product session was re-stamped.
+	SessionSyncUnchanged SessionSyncResult = "unchanged"
+
+	// SessionSyncSwitched: the browser is signed in as a DIFFERENT person (or in
+	// a different Keycloak session). ⛔ The product session is CLEARED and the
+	// product serves its own signed-out state — it is never silently re-minted
+	// as the new person. Operator decision, 2026-09-11 (§C.7): an open editor or
+	// workflow tab must not change owner underneath unsaved work. Nothing is
+	// lost by the strictness — the browser still holds the new SSO session, so
+	// the next sign-in click returns immediately without a credential prompt.
+	SessionSyncSwitched SessionSyncResult = "switched"
+
+	// SessionSyncSignedOut: the IdP explicitly refused `prompt=none`. There is no
+	// SSO session in this browser; the product session is CLEARED.
+	SessionSyncSignedOut SessionSyncResult = "signed_out"
+
+	// SessionSyncNoSession: this product had no session to reconcile. Nothing was
+	// touched and no authorization request was made.
+	SessionSyncNoSession SessionSyncResult = "no_session"
+
+	// SessionSyncDisabled: Config.SessionSyncEnabled is false. ⛔ Reported as a
+	// distinct result rather than a 404, for the same reason pathSession is
+	// registered unconditionally: a caller cannot tell a 404 from a signed-out
+	// answer, and would sign its user out on a route that simply is not enabled.
+	SessionSyncDisabled SessionSyncResult = "disabled"
+
+	// SessionSyncError: no verdict could be reached — a transport failure, a 5xx,
+	// an unexpected OAuth error, a state mismatch. ⛔ FAILS OPEN: nothing is
+	// touched and the caller must change nothing.
+	SessionSyncError SessionSyncResult = "error"
+)
+
+// Session sync log keys + messages (v0.20.0).
+const (
+	logKeySyncResult     = "sync_result"
+	logKeySyncPriorSub   = "prior_sub"
+	logKeySyncBrowserSub = "browser_sub"
+	logMsgSyncSwitched   = "go-vai-oidc: the browser is signed in as a different identity; clearing this product's session"
+	logMsgSyncSignedOut  = "go-vai-oidc: the IdP has no session for this browser; clearing this product's session"
+	logMsgSyncUnchanged  = "go-vai-oidc: session sync confirmed the browser identity is unchanged"
+	logMsgSyncSoft       = "go-vai-oidc: session sync could not reach a verdict; session kept (fail-open)"
+	logMsgSyncStart      = "go-vai-oidc: session sync starting a silent authorization request"
 )
