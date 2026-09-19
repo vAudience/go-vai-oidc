@@ -6,7 +6,7 @@ go 1.25.0
 // (govulncheck-clean). This does NOT raise the consumer floor — the `go`
 // directive above stays at 1.25.0 — it only selects the toolchain that builds
 // this module.
-toolchain go1.25.12
+toolchain go1.25.13
 
 require (
 	github.com/coreos/go-oidc/v3 v3.18.0
