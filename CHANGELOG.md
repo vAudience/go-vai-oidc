@@ -1,5 +1,89 @@
 # Changelog
 
+## v0.21.1 — 2026-09-22
+
+**The vulnerability gate now analyses the toolchain the pin selects.** No library change: no
+exported API moves, no behaviour changes, nothing for a consumer to adapt to. Closes
+**go-vai-oidc#9**'s open half.
+
+### ⛔ The defect was measured twice, in two different places, with the same shape
+
+go-vai-oidc#9 found it first in CI: `go.mod`'s `toolchain` directive exists — by its own
+comment — to select a patched 1.25.x that is govulncheck-clean, and the GitHub Actions job that
+verified it used `setup-go` with `go-version: '1.25'`, which resolves to whatever patch the
+runner has and **ignores the directive entirely**. It scanned a newer stdlib than the pin
+selects and reported clean indefinitely while the pin aged behind it.
+
+⛔ **The local gate that replaced GitHub Actions reproduced the identical defect one box over,
+and the issue was closed on the belief that it had not.** `GOTOOLCHAIN` defaults to `auto`,
+which takes the **maximum** of the module's requirement and whatever Go is installed — so
+`make vuln` on any developer machine with a newer toolchain analysed a stdlib the pin does not
+select.
+
+⚠️ **It is asymmetric, and that is what makes it quiet.** The gate can only ever be *more* up
+to date than the artifact, never less, so it fails **open**, forever, behind a green run.
+
+⭐ The general shape, in the issue's own words: *the check and the thing being checked were
+never the same artifact.*
+
+### What changed
+
+- **`make vuln` runs the scan with `GOTOOLCHAIN=$(TOOLCHAIN_PIN)`**, where `TOOLCHAIN_PIN` is
+  **derived from `go.mod` with `awk`**, never written out. A literal would be a second copy of
+  the pin inside the one target whose job is to prove the pin is honoured.
+- ⭐ **The scanner build and the analysis use DIFFERENT toolchains, deliberately.** Conflating
+  them is what the first attempt at this fix got wrong: govulncheck v1.8.0 itself requires
+  Go ≥ 1.26, so forcing the module's pin on the tool build fails outright. The scanner is built
+  with the default toolchain; the **analysis** runs at the pin. `govulncheck` reports the Go
+  version it analysed, so the claim is checkable rather than asserted — the gate now prints it.
+- **The scanner version pin is binding.** The target used to check only that `govulncheck`
+  existed on `PATH`, so `GOVULNCHECK_VERSION` was documentation and whatever the developer
+  installed last is what ran — the exact shape forgebox paid for once with `golangci-lint`. It
+  is now `go install`ed at the pinned version into a repo-local `.tools/`. Pin moved
+  **v1.1.4 → v1.8.0**, which is what was actually in use.
+- **An empty `toolchain` directive fails the target** rather than silently scanning at `auto`.
+
+### The proof
+
+Rolling the pin back to the stale `go1.25.12` that go-vai-oidc#9 measured makes the gate
+**fail**, on a box whose local toolchain is `go1.25.13` — where the old target reported clean:
+
+```
+$ sed -i 's/toolchain go1.25.13/toolchain go1.25.12/' go.mod && make vuln
+    Found in: net/http@go1.25.12
+    Fixed in: net/http@go1.25.13
+Your code is affected by 4 vulnerabilities from the Go standard library.
+make: *** [Makefile:117: vuln] Error 3
+```
+
+### Guards, and the one that was too weak
+
+Four tests in `toolchainpin_test.go` pin the properties above, each mutation-proven.
+
+⛔ **The first version of `TestVulnGateUsesThePinnedToolchain` did not catch its own mutation.**
+It searched the whole Makefile for `GOTOOLCHAIN=$(TOOLCHAIN_PIN)`, and removing it from the
+**scan** line left the guard green — because the neighbouring `govulncheck -version` line, which
+exists only to *print* what was analysed, still carried the string. **A guard satisfied by a
+line other than the one that matters** is the failure mode this whole file is about, rebuilt
+inside the file. It now locates the single scan invocation (excluding `-version` and every
+`echo`) and **fails rather than guessing** when it cannot find exactly one.
+
+### ⚠️ One thing a consumer DOES see
+
+`obolresolver.ClientVersion` moves to `go-vai-oidc/0.21.1`, because this repository's own guard
+ties it to `versions.yaml` and fails the build otherwise. That string is the `sdk_contract`
+label on obol's `obl_consumer_sdk_total{service_id,sdk_contract}`, which obol bounds into a
+closed vocabulary — so a new label value appears there when consumers adopt. Nothing to do; it
+is the mechanism working.
+
+### Not done, deliberately
+
+**The pin is kept, not dropped.** go-vai-oidc#9 offered dropping it as an option, on the ground
+that the consumer's own toolchain is what actually protected everyone. That is true and it is
+still not a reason: `GOTOOLCHAIN=auto` takes the maximum, so the pin binds **only** when the
+environment is OLDER than it — a container build, a fresh CI image — which is precisely the case
+it was written for. What was wrong was never the pin; it was that nothing checked it.
+
 ## v0.21.0 — 2026-09-11
 
 **The BROWSER half of session sync is now owned by the library**, and the one failure mode it has

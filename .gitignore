@@ -33,3 +33,4 @@ project_plan/
 # Editor/IDE
 # .idea/
 # .vscode/
+.tools/
