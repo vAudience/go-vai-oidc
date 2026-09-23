@@ -1,5 +1,90 @@
 # Changelog
 
+## v0.22.0 — 2026-09-23
+
+**Session sync no longer signs out sessions minted by `IssueSession` (inline / ROPC login).**
+Additive and backward-compatible: one new `SessionSyncResult`, one new internal payload field, no
+exported API removed or changed, no config.
+
+### ⛔ The defect
+
+`Auth.IssueSession` mints a session from an alternate grant — ROPC behind an inline login form, the
+`inline_enabled` path in atlas and stele. The credential exchange happens **server-side**, so the
+browser holds **no provider SSO cookie by construction**. With `SessionSyncEnabled`, the sync
+iframe's `prompt=none` request therefore always received `login_required`; `handleSyncCallback`
+treated that as the explicit verdict `signed_out` and **cleared the session**. Enabling session sync
+on any deployment that uses inline login signed every inline session out on the first focus,
+visibility or timer tick — for atlas, whose browser gate signs in inline, that is the whole gate
+going red in a way that reads as an auth outage. Found while wiring atlas#661 onto the one-logout
+floor.
+
+⭐ `login_required` for such a session is not a verdict about it: the browser never had a provider
+session to lose. Revalidation already failed OPEN for these sessions (no refresh token); sync is now
+consistent with it.
+
+### What changed
+
+- **`sessionPayload.Src`** (JSON `src`, `omitempty`). `IssueSession` writes `"src":"grant"`; the
+  redirect callback writes nothing, so a redirect-login cookie is byte-for-byte the shape a
+  pre-v0.22.0 build wrote, and every old cookie decodes as "redirect" and behaves identically.
+- **`SessionSyncNotApplicable` (`"not_applicable"`)** — answered, with nothing touched, when a
+  grant-minted session meets `login_required` / `interaction_required` / `consent_required` /
+  `account_selection_required`. Logged at Debug (it is the expected answer on every focus).
+- **A grant-minted session is compared on `sub` alone.** Its `sid` names the server-side session
+  the ROPC grant created, which the browser never joined, so it can never equal the browser's;
+  comparing it would turn the same person's own SSO sign-in into `switched` — the original defect
+  in a different costume.
+- **On `unchanged`, a grant-minted session slides but is not re-bound**: it adopts neither the
+  browser's tokens (even with `RetainTokens`) nor its `sid`, and stays grant-minted. Adopting them
+  would silently make revalidation and the next sync judge it by an SSO sign-in it was never
+  minted from.
+- **`sessionsync.js`** treats `not_applicable` exactly like `unchanged`: no reload, schedule kept.
+
+### The `switched` decision, reasoned
+
+If the browser DOES hold a provider session for a **different** `sub`, a grant-minted session is
+still **cleared** (`switched`). Somebody else signing in to the provider at this browser is real
+evidence that a different person is here — the shared-machine case this feature exists for — and it
+does not depend on how the product session was minted. That is also why the round trip is **not**
+short-circuited in `handleSessionSync` for grant sessions: a short-circuit would make this case
+unreachable. For the same reason the served script does **not** stop on `not_applicable` the way it
+stops on `disabled`: the answer can change (a sign-in in another tab), and the later `switched` is
+the one thing sync can still tell such a session. The cost is one `prompt=none` round trip per
+focus — the same a redirect-login session already pays.
+
+### Tests
+
+`sessionsync_grant_test.go`: grant session + each no-session code ⇒ `not_applicable`, not cleared;
+grant + non-verdict ⇒ still `error`; grant + different `sub` ⇒ `switched`, cleared; grant + same
+`sub`/different `sid` ⇒ `unchanged`, no sid/token adoption, still grant; a sidless grant session does
+not self-heal a sid; a raw pre-v0.22.0 JSON cookie without `src` decodes and is still `signed_out`;
+`src` is absent on the wire for redirect sessions; the script's `not_applicable` branch precedes the
+reload branch and only returns. Revert-checked: removing the grant branch fails the decisive test;
+making it unconditional fails `TestSyncCallback_LoginRequiredClearsTheSession` and the pre-v0.22.0
+cookie test; dropping the marker in `IssueSession`, comparing `sid` for grant sessions, adopting
+tokens, and reloading in the script each fail at least one named test.
+
+### Release info for users / marketing
+
+People who sign in with the inline username/password form stay signed in when a product enables the
+new "one logout" browser sync. Previously, turning that sync on would have signed those people out
+within seconds of their next click back into the tab. Signing in as a different person at the
+identity provider in the same browser still signs the previous person out of the product, as
+intended.
+
+### Release info for devs
+
+- **Consumers: nothing to do but bump the pin.** No config, no API change. `IssueSession` marks what
+  it mints automatically.
+- ⚠️ **Cookies issued by an older build carry no marker**, so an inline-login cookie minted before
+  the bump is still signed out by sync until its holder signs in again. Bump **before** (or with)
+  enabling `SessionSyncEnabled` on a deployment that uses inline login.
+- A hand-written sync client (the README's `<details>` snippet) already ignores unknown results, so
+  it handles `not_applicable` correctly without change; one that switches exhaustively on the
+  result should add it as a no-op.
+- `obolresolver.ClientVersion` moves to `go-vai-oidc/0.22.0` (a new `sdk_contract` label value on
+  obol's consumer metric as consumers adopt; nothing to do).
+
 ## v0.21.1 — 2026-09-22
 
 **The vulnerability gate now analyses the toolchain the pin selects.** No library change: no

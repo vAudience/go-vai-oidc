@@ -55,6 +55,26 @@ type sessionPayload struct {
 	// very next request, turning a library upgrade into a fleet-wide refresh
 	// storm.
 	LastValidated int64 `json:"lv,omitempty"`
+
+	// Src (v0.22.0) records HOW the session was minted. Empty — and absent on
+	// the wire — means the browser Authorization Code flow, which is also what
+	// every session minted before v0.22.0 decodes as, so an old cookie behaves
+	// exactly as it did. sessionSourceGrant means IssueSession: the credential
+	// exchange happened SERVER-SIDE (ROPC / inline login), so this browser never
+	// received a provider SSO cookie for it.
+	//
+	// ⛔ THAT IS WHY SESSION SYNC MUST KNOW. A `prompt=none` answer of
+	// `login_required` says "this browser holds no provider session" — which,
+	// for a grant-minted session, was true from the first second and is not a
+	// verdict about the session at all. Without this field sync read it as
+	// `signed_out` and cleared every inline-login session on its first tick.
+	Src string `json:"src,omitempty"`
+}
+
+// isGrantMinted reports whether the session was minted by IssueSession from an
+// alternate grant, i.e. without the browser ever holding a provider session.
+func (p *sessionPayload) isGrantMinted() bool {
+	return p != nil && p.Src == sessionSourceGrant
 }
 
 // toUser converts the payload to a public User.

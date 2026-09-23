@@ -55,6 +55,21 @@ package vaioidc
 //     logged-in user the moment a consumer upgrades — a library bump presenting
 //     as a fleet-wide logout, which is the single worst failure this file could
 //     have. Absent `sid` falls back to comparing `sub` alone.
+//
+//  4. ⛔ A GRANT-MINTED SESSION NEVER HAD A BROWSER SESSION TO LOSE (v0.22.0).
+//     IssueSession mints from a server-side credential exchange (ROPC / inline
+//     login), so the browser holds no provider SSO cookie BY CONSTRUCTION and
+//     `login_required` is the permanent, expected answer — not a verdict. It
+//     yields SessionSyncNotApplicable and touches nothing; before v0.22.0 it
+//     yielded `signed_out` and cleared every inline-login session on the first
+//     focus. What such a session CAN still learn is that the browser is signed
+//     in to the provider as SOMEBODY ELSE — real evidence that a different
+//     person is at this browser — so a different `sub` still clears it
+//     (`switched`). The `sid` is NOT compared for it: the grant's sid names a
+//     server-side session the browser never joined, so it can never equal the
+//     browser's and would turn every same-person SSO sign-in into a switch.
+//     For the same reason the round trip is NOT short-circuited at the start:
+//     that would make the switched case unreachable.
 
 import (
 	"crypto/rand"
@@ -154,6 +169,17 @@ func (a *Auth) handleSyncCallback(w http.ResponseWriter, r *http.Request) {
 
 	if errParam := r.URL.Query().Get(queryParamError); errParam != "" {
 		if isSyncNoSessionError(errParam) {
+			// ⛔ Rule 4: for a grant-minted session this is how the session was
+			// born, not news about it. Nothing is cleared.
+			if payload.isGrantMinted() {
+				a.logger.Debug(logMsgSyncNotApplicable,
+					slog.String(logKeyComponent, logComponent),
+					slog.String(logKeySub, payload.Sub),
+					slog.String(logKeyOAuthErrorCode, errParam),
+				)
+				a.writeSyncResult(w, SessionSyncNotApplicable)
+				return
+			}
 			a.logger.Info(logMsgSyncSignedOut,
 				slog.String(logKeyComponent, logComponent),
 				slog.String(logKeySub, payload.Sub),
@@ -196,7 +222,7 @@ func (a *Auth) handleSyncCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !sameIdentity(payload, browser) {
+	if !syncSameIdentity(payload, browser) {
 		a.logger.Info(logMsgSyncSwitched,
 			slog.String(logKeyComponent, logComponent),
 			slog.String(logKeySyncPriorSub, payload.Sub),
@@ -217,7 +243,13 @@ func (a *Auth) handleSyncCallback(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	payload.LastValidated = now.Unix()
 	payload.Exp = now.Add(a.cfg.SessionTTL).Unix()
-	if a.cfg.RetainTokens && token != nil {
+	// ⚠️ A grant-minted session is re-stamped (the provider did just vouch for
+	// this person in this browser) but it does NOT adopt the browser's tokens or
+	// sid: that would silently re-bind it to an SSO session it was never minted
+	// from, so a later revalidation or sync would judge it by somebody else's
+	// sign-in. It stays what IssueSession made it.
+	grant := payload.isGrantMinted()
+	if a.cfg.RetainTokens && token != nil && !grant {
 		payload.AccessToken = token.AccessToken
 		payload.AccessTokenExp = token.Expiry.Unix()
 		if token.RefreshToken != "" {
@@ -226,7 +258,7 @@ func (a *Auth) handleSyncCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	// A session minted before v0.20.0 carries no `sid`; record it now so the
 	// NEXT sync can compare on the sign-in rather than only on the person.
-	if payload.Sid == "" {
+	if payload.Sid == "" && !grant {
 		payload.Sid = browser.SessionID
 	}
 	if writeErr := setSessionCookie(w, payload, a.sessionKey, a.cfg.CookieName, a.cfg.CookiePath, a.cfg.secureCookie(), a.logger); writeErr != nil {
@@ -264,6 +296,16 @@ func sameIdentity(payload *sessionPayload, browser *User) bool {
 		return payload.Sid == browser.SessionID
 	}
 	return true
+}
+
+// syncSameIdentity is sameIdentity with rule 4 applied: a grant-minted session is
+// compared on `sub` alone, because its `sid` names a server-side session the
+// browser never joined and can never match the browser's.
+func syncSameIdentity(payload *sessionPayload, browser *User) bool {
+	if payload.isGrantMinted() {
+		return browser != nil && payload.Sub == browser.Sub
+	}
+	return sameIdentity(payload, browser)
 }
 
 // isSyncNoSessionError reports whether an IdP error code is the EXPLICIT verdict

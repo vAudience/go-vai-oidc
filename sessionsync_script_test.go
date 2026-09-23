@@ -108,7 +108,7 @@ func TestSessionSyncScript_ShippedAssetCarriesBothTokens(t *testing.T) {
 // renaming one the script DOES act on turns a sign-out into nothing happening.
 // Both sides are now read from the same constants.
 func TestSessionSyncScript_VerdictVocabularyMatchesTheServer(t *testing.T) {
-	for _, v := range []SessionSyncResult{SessionSyncSwitched, SessionSyncSignedOut, SessionSyncDisabled} {
+	for _, v := range []SessionSyncResult{SessionSyncSwitched, SessionSyncSignedOut, SessionSyncDisabled, SessionSyncNotApplicable} {
 		assert.Contains(t, sessionSyncScriptSource, `"`+string(v)+`"`,
 			"the client script must act on the %q verdict the server can emit", v)
 	}

@@ -446,7 +446,21 @@ const (
 	// an unexpected OAuth error, a state mismatch. ⛔ FAILS OPEN: nothing is
 	// touched and the caller must change nothing.
 	SessionSyncError SessionSyncResult = "error"
+
+	// SessionSyncNotApplicable (v0.22.0): the session was minted by IssueSession
+	// from an alternate grant (ROPC / inline login) and the browser holds no
+	// provider session. ⛔ Nothing is touched. The grant happened server-side,
+	// so this browser NEVER had a provider session to lose: `login_required` is
+	// a fact about how the session was minted, not a verdict about it. Treating
+	// it as `signed_out` cleared every inline-login session on the first sync.
+	// The caller changes nothing and may keep syncing — a provider session that
+	// appears later for a DIFFERENT subject is still reported as `switched`.
+	SessionSyncNotApplicable SessionSyncResult = "not_applicable"
 )
+
+// sessionSourceGrant is the sessionPayload.Src value for a session minted by
+// IssueSession (v0.22.0). Absent/empty means the browser redirect flow.
+const sessionSourceGrant = "grant"
 
 // Session sync log keys + messages (v0.20.0).
 const (
@@ -458,6 +472,9 @@ const (
 	logMsgSyncUnchanged  = "go-vai-oidc: session sync confirmed the browser identity is unchanged"
 	logMsgSyncSoft       = "go-vai-oidc: session sync could not reach a verdict; session kept (fail-open)"
 	logMsgSyncStart      = "go-vai-oidc: session sync starting a silent authorization request"
+	// logMsgSyncNotApplicable is Debug, not Info: for an inline-login deployment
+	// it fires on every focus of every tab, and it is the expected answer.
+	logMsgSyncNotApplicable = "go-vai-oidc: the browser holds no provider session, but this session was minted from an alternate grant and never depended on one; session kept"
 	// ⭐ logMsgSyncBlocked is the browser half's only voice. It is WARN, not Info:
 	// a product reporting this is a product where a signed-out person keeps a
 	// working session, which is the condition this whole feature exists to end.

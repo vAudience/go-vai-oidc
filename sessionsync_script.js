@@ -95,6 +95,17 @@
       stop();
       return;
     }
+    // `not_applicable` (v0.22.0): an inline-login (grant-minted) session in a
+    // browser with no provider session. Nothing was cleared server-side, so
+    // there is nothing to render — and ⛔ it must NEVER reload, or every inline
+    // session would flash on every focus. It deliberately does NOT stop the
+    // way `disabled` does: the answer can change (somebody signs in to the
+    // provider as a different person in another tab), and that later
+    // `switched` verdict is the one thing sync can still tell such a session.
+    // It is acted on exactly like `unchanged`: keep the schedule, do nothing.
+    if (result === "not_applicable") {
+      return;
+    }
     // The session cookie is already gone server-side on both closing verdicts,
     // so a reload renders the signed-out page.
     if (result === "switched" || result === "signed_out") {

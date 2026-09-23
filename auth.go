@@ -297,11 +297,18 @@ func (a *Auth) VerifyIDToken(ctx context.Context, rawIDToken string) (*User, err
 //   - Validating the resulting ID token (signature, audience, expiry).
 //   - Mapping the token claims to a `*User`.
 //
-// On success this cookie is INDISTINGUISHABLE from one issued by
-// `handleCallback` — same payload shape, same encryption key, same TTL
+// On success this cookie is, to every consumer-visible surface, the same
+// as one issued by `handleCallback` — same encryption key, same TTL
 // (cfg.SessionTTL), same cookie attributes. Downstream middleware
 // (`RequireSession`, `OptionalSession`) treats the resulting session
 // exactly as if the user had come through the standard flow.
+//
+// ⚠️ v0.22.0: the payload DOES record that it was grant-minted (an
+// internal field, never exposed on User), because session sync must tell
+// the two apart. This browser never held a provider SSO cookie for the
+// grant, so `prompt=none` answering `login_required` is not a sign-out of
+// this session — sync answers SessionSyncNotApplicable and leaves it alone.
+// A browser SSO session for a DIFFERENT subject still clears it (switched).
 //
 // `rawIDToken` is stored in the encrypted payload so RP-Initiated Logout
 // can hand it back to Keycloak as `id_token_hint`. Pass the empty string
@@ -333,6 +340,9 @@ func (a *Auth) IssueSession(w http.ResponseWriter, r *http.Request, user *User, 
 		IDToken:       rawIDToken,
 		Exp:           issuedAt.Add(a.cfg.SessionTTL).Unix(),
 		LastValidated: issuedAt.Unix(),
+		// v0.22.0: marked so session sync does not read this browser's
+		// (necessarily absent) provider session as a sign-out. See Src.
+		Src: sessionSourceGrant,
 	}
 	payload.fromUser(user)
 	return setSessionCookie(w, payload, a.sessionKey, a.cfg.CookieName, a.cfg.CookiePath, a.cfg.secureCookie(), a.logger)

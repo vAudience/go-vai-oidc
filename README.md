@@ -182,6 +182,7 @@ form — then compares the returned `sid`/`sub` with this product's own session 
 | `no_session` | this product had no session to reconcile | untouched |
 | `disabled` | `SessionSyncEnabled` is false | untouched |
 | `error` | no verdict could be reached | untouched (**fails open**) |
+| `not_applicable` | (v0.22.0) the session was minted by `IssueSession` (inline / ROPC login) and the browser holds no provider session — it never had one to lose | untouched |
 
 ⭐ **It requires nothing of the realm.** The silent request reuses this consumer's already-registered
 `CallbackURL`, so there is no new `redirectUris` entry, no client change and no migration.
@@ -207,7 +208,9 @@ On `switched` or `signed_out` it calls `location.reload()`: the session cookie i
 server-side, so the reload renders the product's own signed-out state. ⛔ It deliberately does **not**
 navigate to `/auth/login` on `switched` — that silently adopts the new identity, which is exactly
 the surprise this reports instead of performing. On `disabled` it stops permanently, because that is
-the server truthfully saying this deployment did not opt in.
+the server truthfully saying this deployment did not opt in. On `not_applicable` (v0.22.0) it does
+nothing and keeps its schedule, exactly as on `unchanged` — it neither reloads nor stops, because a
+provider session that later appears for a different person is still worth a `switched`.
 
 ⭐ **If the frame is blocked, the script says so to your server.** After three consecutive runs that
 reach no verdict it stops and `POST`s to `<mount>/session/sync/blocked`, which logs one WARN naming
@@ -272,6 +275,29 @@ those can fix the parent page's policy, and the parent page has one job:**
 - ⚠️ **A blocked frame reports to a browser console and nowhere else.** There is no server-side
   signal, no 4xx, no log line: sync would simply never report, on every page, with every health
   check green. Verify in a real browser with the console open, once, per product.
+
+### Sessions minted by `IssueSession` (inline / ROPC login) — v0.22.0
+
+`IssueSession` mints a session from a credential exchange the consumer performed **server-side**
+(most commonly ROPC behind an inline login form). The browser therefore holds **no provider SSO
+cookie**, by construction, and `prompt=none` answers `login_required` every time. ⛔ Before v0.22.0
+sync read that as `signed_out` and cleared every inline-login session on the first focus — enabling
+sync on a deployment with inline login signed all of those users out.
+
+Since v0.22.0 such a session is marked in its (encrypted) payload and sync treats it this way:
+
+- **No provider session in the browser** → `not_applicable`; the session is untouched. This is
+  consistent with revalidation, which already fails open for these sessions (they carry no refresh
+  token).
+- **The browser IS signed in to the provider as a different `sub`** → `switched`; the session is
+  cleared. Somebody else signing in at this browser is real evidence whatever minted the session.
+- **The browser is signed in as the same `sub`** → `unchanged`; the session slides, but it is
+  compared on `sub` only (its `sid` names a server-side session the browser never joined) and it
+  does **not** adopt the browser's tokens or `sid` — it stays a grant-minted session.
+
+Nothing to configure. ⚠️ Cookies minted before v0.22.0 carry no marker and behave exactly as before
+— so an inline-login cookie issued by an older build is still signed out by sync until its holder
+signs in again. Bump the pin before (or together with) enabling `SessionSyncEnabled`.
 
 ### Three things to get right before enabling it
 
