@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.23.1 — 2026-09-28
+
+**An empty membership set is admitted only when the landing will actually redirect.** A behaviour
+tightening; no API or config change.
+
+### ⛔ The defect (security review)
+
+Since v0.18.0, `obolresolver`'s zero-membership arm admitted the user whenever `landing != nil` —
+including when `admitLanding` had **cleared** the URL (a host outside `AllowedLandingHosts`, a bad
+scheme, userinfo) and when the decision never redirects (`ready`, or a value this version does not
+know). `RedirectTarget()` then answered false and the login finished on the consumer's own
+destination with `OrgID == ""` — an org-less session, which several fleet services read as **all
+tenants**. obol from 3.346.0 answers JIT-off users with `memberships: []` plus a landing, which makes
+this arm reachable in production.
+
+### What changed
+
+- The arm admits the empty set only when `landing.RedirectTarget()` answers ok — the existing
+  predicate, no second copy. Otherwise the pre-v0.18.0 contract applies unchanged:
+  `AllowEmptyMembership` admits the user (Landing still attached, OrgID empty), else `(nil, nil)`.
+- `TestLanding_EmptyMembershipsNeedALandingThatRedirects` pins it; the closed_beta admission test's
+  refused-URL cases now expect a rejection.
+- `ClientVersion` = `go-vai-oidc/0.23.1`.
+
 ## v0.23.0 — 2026-09-28
 
 **`closed_beta` is a redirect landing decision.** Additive and backward-compatible: one new constant,

@@ -160,7 +160,12 @@ type obolEnvelope struct {
 // On failure paths:
 //   - HTTP-transport / 5xx / non-2xx → returns wrapped error;
 //     vai-oidc redirects user to LogoutRedirect with a Warn log.
-//   - Empty memberships AND AllowEmptyMembership=false →
+//   - Empty memberships AND a landing that will REDIRECT (a redirect
+//     decision whose URL survived admission) → (user, nil) with OrgID
+//     unset; the callback sends the browser to the landing URL (v0.18.0,
+//     tightened in v0.23.1 — see the arm itself).
+//   - Empty memberships, no redirecting landing, AND
+//     AllowEmptyMembership=false →
 //     (nil, nil) which vai-oidc treats as a rejection (per spec).
 //   - Empty memberships AND AllowEmptyMembership=true →
 //     (user, nil) with OrgID unset (consumer decides).
@@ -267,12 +272,25 @@ func New(cfg Config) vaioidc.UserResolver {
 			//
 			// The flag survives for consumers with a custom resolver or an older
 			// obol, where it still decides. It just stops deciding a human's fate
-			// whenever a decision is present.
-			if landing != nil {
+			// whenever a decision is present THAT THE CALLBACK WILL FOLLOW.
+			//
+			// ⛔ THE EMPTY SET IS ADMITTED ONLY BECAUSE THE BROWSER IS ABOUT TO
+			// LEAVE FOR THE BACKEND'S FUNNEL (v0.23.1). Until then any non-nil
+			// landing admitted it — including one whose URL admitLanding had just
+			// CLEARED (a host outside AllowedLandingHosts, a bad scheme, userinfo)
+			// and one whose decision never redirects (`ready`, or a value this
+			// version does not know). RedirectTarget then answered false and the
+			// login finished on the consumer's own destination with OrgID == "",
+			// an org-less session that several fleet services read as ALL
+			// TENANTS. A landing that cannot redirect is not an instruction the
+			// consumer can follow, so it decides nothing and the pre-v0.18.0
+			// contract (the flag, else reject) applies unchanged.
+			if _, redirects := landing.RedirectTarget(); redirects {
 				user.Landing = landing
 				return user, nil
 			}
 			if allowEmpty {
+				user.Landing = landing
 				return user, nil
 			}
 			// Empty membership → reject (per spec §5.5).
@@ -346,7 +364,7 @@ const headerObolClientVersion = "X-Obol-Client-Version"
 // module, which cannot carry it at all. So the honest answer to "which code
 // composed this request" is a version string this file owns, and it must be
 // bumped with versions.yaml (TestClientVersionMatchesTheManifest pins it).
-const ClientVersion = "go-vai-oidc/0.23.0"
+const ClientVersion = "go-vai-oidc/0.23.1"
 
 // admitLanding turns obol's landing object into a value the callback may act
 // on, or nil.

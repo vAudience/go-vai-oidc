@@ -364,6 +364,12 @@ and the consumer then refused the person without saying why. `vaioidc.LandingDec
 the one list of redirecting decisions; `RedirectTarget` and `obolresolver`'s URL admission both read
 it.
 
+⛔ **An empty membership set is admitted only when the landing will actually redirect (v0.23.1).**
+A landing whose URL `obolresolver` refused, or whose decision never redirects (`ready`, an unknown
+value), cannot be followed, so it decides nothing: `AllowEmptyMembership` decides as before v0.18.0,
+and with the strict default the login is rejected. Before v0.23.1 such a login finished org-less on
+the consumer's own destination — an empty `OrgID`, which several services read as *all tenants*.
+
 ⚠️ **It is not persisted in the session, deliberately.** It is a verdict about one login, so a
 session copy goes stale the moment the person acts on it.
 

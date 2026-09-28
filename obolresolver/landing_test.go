@@ -347,12 +347,21 @@ func TestLanding_ClosedBetaIsValidatedLikeEveryRedirectArm(t *testing.T) {
 			defer srv.Close()
 
 			// AllowEmptyMembership stays FALSE: the closed-beta population holds no
-			// real organization by definition, and the decision must carry the
-			// login rather than the flag rejecting it.
+			// real organization by definition, and a decision that redirects must
+			// carry the login rather than the flag rejecting it. One whose URL was
+			// refused cannot redirect, so it is rejected (v0.23.1).
 			r := New(Config{BaseURL: srv.URL, Client: srv.Client(), AllowedLandingHosts: tc.allowed})
 			u, err := r(context.Background(), &vaioidc.User{Sub: "sub-beta"})
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
+			}
+			if tc.want == "" {
+				if u != nil {
+					t.Errorf("a refused URL leaves nothing to redirect to, so an empty "+
+						"membership set must be rejected (nil, nil); got %+v — an org-less "+
+						"session reads as ALL TENANTS in several fleet services", u)
+				}
+				return
 			}
 			if u == nil || u.Landing == nil {
 				t.Fatal("a closed_beta decision with zero memberships must return the user " +
@@ -370,6 +379,67 @@ func TestLanding_ClosedBetaIsValidatedLikeEveryRedirectArm(t *testing.T) {
 			}
 			if !ok || got != tc.want {
 				t.Errorf("RedirectTarget() = %q,%v want %q,true", got, ok, tc.want)
+			}
+		})
+	}
+}
+
+// TestLanding_EmptyMembershipsNeedALandingThatRedirects is v0.23.1's security
+// tightening: a landing admits an empty membership set ONLY when the callback
+// will actually send the browser to it. Every other landing falls back to the
+// pre-v0.18.0 contract — AllowEmptyMembership, else (nil, nil).
+//
+// ⛔ THE FAILURE THIS PINS IS AN ORG-LESS SESSION ON THE CONSUMER'S OWN
+// DESTINATION. Before v0.23.1 any non-nil landing admitted the user, so a URL
+// admitLanding had cleared, or a decision that never redirects, finished the
+// login with OrgID == "" — which several fleet services read as ALL TENANTS.
+func TestLanding_EmptyMembershipsNeedALandingThatRedirects(t *testing.T) {
+	cases := []struct {
+		name     string
+		decision string
+		url      string
+		allowed  []string
+	}{
+		{"onboarding with a host outside AllowedLandingHosts", "onboarding",
+			"https://evil.example.com/app/signup", []string{"obol.example.com"}},
+		{"onboarding with a bad scheme", "onboarding", "javascript:alert(1)", nil},
+		{"ready", "ready", "", nil},
+		{"ready carrying a URL anyway", "ready", "https://obol.example.com/app", nil},
+		{"a decision this version does not know", "future_decision",
+			"https://obol.example.com/app/x", nil},
+	}
+	for _, tc := range cases {
+		body, _ := json.Marshal(map[string]any{
+			"user_id":     "u",
+			"memberships": []map[string]any{},
+			"landing":     map[string]any{"decision": tc.decision, "landing_url": tc.url},
+		})
+		t.Run(tc.name+"/strict default rejects", func(t *testing.T) {
+			srv := landingServer(t, string(body), nil)
+			defer srv.Close()
+			r := New(Config{BaseURL: srv.URL, Client: srv.Client(), AllowedLandingHosts: tc.allowed})
+			u, err := r(context.Background(), &vaioidc.User{Sub: "sub-x"})
+			if err != nil || u != nil {
+				t.Errorf("want (nil, nil): a landing that cannot redirect is not an "+
+					"instruction the consumer can follow, and admitting the user finishes "+
+					"an org-less login; got (%+v, %v)", u, err)
+			}
+		})
+		t.Run(tc.name+"/AllowEmptyMembership admits", func(t *testing.T) {
+			srv := landingServer(t, string(body), nil)
+			defer srv.Close()
+			r := New(Config{BaseURL: srv.URL, Client: srv.Client(), AllowedLandingHosts: tc.allowed,
+				AllowEmptyMembership: true})
+			u, err := r(context.Background(), &vaioidc.User{Sub: "sub-x"})
+			if err != nil || u == nil {
+				t.Fatalf("with the flag set the consumer opted into org-less users, exactly "+
+					"as before v0.18.0; got (%+v, %v)", u, err)
+			}
+			if u.OrgID != "" {
+				t.Errorf("OrgID = %q, want empty", u.OrgID)
+			}
+			if _, ok := u.Landing.RedirectTarget(); ok {
+				t.Error("and the landing still must not redirect")
 			}
 		})
 	}
