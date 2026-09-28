@@ -48,8 +48,11 @@ The following are the **consumer's** responsibility and out of scope for this li
 ### `Config.RequireEmailDomain` is a domain filter, not a verification check
 
 The optional email-domain gate matches the `email` claim's **domain** only — it
-does **not** inspect `email_verified`. On a multi-tenant IdP where a user could
-hold an unverified address in the target domain, do not treat this gate as a
-trust boundary. If you need verified-email enforcement, assert `email_verified`
-in your `UserResolver` (add it to `Config.ExtraClaims` and check it) or enforce
-it at the IdP.
+does **not** inspect `email_verified`. On a realm brokering a multi-tenant IdP
+(Microsoft Entra for any tenant), a tenant administrator can set any address
+(the "nOAuth" class), so a domain match alone is not a trust boundary.
+
+Since v0.24.0, set `Config.RequireEmailVerified: true` alongside it (New() logs a
+WARN when the domain gate is configured without it), and gate staff surfaces with
+`Auth.RequireStaff(vaioidc.VAIStaffPolicy())`, which requires `email_verified`,
+an exact parsed-domain match and a realm role together.

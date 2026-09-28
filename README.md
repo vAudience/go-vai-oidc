@@ -84,7 +84,8 @@ Browser → GET /auth/login
        → OIDC provider (authorization-code flow + PKCE, state cookie)
        → GET /auth/callback
             1. Verify ID token (signature + iss + aud) via coreos/go-oidc
-            2. Extract user: Sub, Email, Name, RealmRoles, ExtraClaims
+            2. Extract user: Sub, Email, EmailVerified, Name, RealmRoles, ExtraClaims
+               (optional) RequireEmailVerified, then RequireEmailDomain — refuse the login
             3. (optional) UserResolver — enrich/reject (resolve org, gate domain, …)
             4. Encrypt session cookie (AES-256-GCM): Sub, Email, Name, OrgID, Memberships, Claims
        → redirect to the post-login target
@@ -318,6 +319,7 @@ signs in again. Bump the pin before (or together with) enabling `SessionSyncEnab
 type User struct {
     Sub         string            // subject claim — stable user identifier; use as a foreign key
     Email       string            // email claim (may be empty if scope not granted)
+    EmailVerified bool            // email_verified claim (v0.24.0); false when absent — never inferred
     Name        string            // name claim (may be empty)
     OrgID       string            // set by your UserResolver (empty otherwise)
     Memberships []Membership       // set by your UserResolver (multi-org/tenant support)
@@ -375,6 +377,84 @@ session copy goes stale the moment the person acts on it.
 
 `RealmRoles` is a Keycloak convenience: for any other provider the `realm_access` claim is simply
 absent and the slice is nil (not an error). Check membership with `user.HasRealmRole("some-role")`.
+
+## Staff surfaces — `RequireStaff` and the ONE staff predicate (v0.24.0)
+
+Every staff admin surface (obol `/console`, the vaisite admin, the conduit admin) gates on the same
+rule, operator ruling D2 (2026-09-28). It ships here once so three repositories do not each
+hand-roll a security predicate:
+
+```
+session AND email_verified AND the parsed email's domain == "vaudience.ai"
+        AND (realm role "obol-system-admin" OR realm role "vai-business-manager")
+```
+
+```go
+admin := chi.NewRouter()
+admin.Use(auth.RequireStaff(vaioidc.VAIStaffPolicy())) // includes RequireSession — do not stack it
+admin.Get("/", consoleHome)
+r.Mount("/console", admin)
+
+// Outside HTTP middleware (a template deciding whether to render an admin link):
+if user.IsStaff(vaioidc.VAIStaffPolicy()) { … }
+```
+
+| Request | Answer |
+|---|---|
+| no / expired / revoked session | exactly `RequireSession`'s answer: browser → login redirect with the deep link, API → 401 |
+| session, `email_verified` not true | 403 `{"error":"staff access required"}` (or `StaffPolicy.Forbidden`) |
+| session, verified, domain ≠ `vaudience.ai` (incl. `evilvaudience.ai`, `x.vaudience.ai`, a display-name form, anything `net/mail` cannot parse as a bare address) | 403 |
+| session, verified, in domain, none of the roles | 403 |
+| all of the above hold | next handler |
+
+- `StaffPolicy.Check(user)` returns `nil` or an error wrapping `ErrNotStaff` plus the cause
+  (`ErrEmailNotVerified`, `ErrEmailClaimMissing`, `ErrEmailDomainMismatch`, `ErrStaffRoleMissing`).
+  Every refusal logs `staff gate refused request` with a stable `staff_reason`.
+- ⛔ An invalid policy (no domain, no roles) is logged at ERROR when the middleware is built and then
+  **refuses everyone** — a misconfigured admin surface is closed, never open.
+- ⚠️ Roles and `email_verified` are read from the SESSION, captured at login. A role revoked in
+  Keycloak takes effect at the person's next login (or when revalidation ends the SSO session).
+- ⚠️ A session cookie minted before v0.24.0 carries no `email_verified` and therefore fails the staff
+  gate until the person signs in again. That is the intended, fail-closed upgrade behaviour.
+- Realm prerequisites (true for realm `vaudience`): the `email verified` and `realm roles` mappers
+  add their claims to the **ID token**, and the realm has `verifyEmail: true`.
+
+For a login-time gate (refuse the login itself rather than a route), set
+`RequireEmailVerified: true` alongside `RequireEmailDomain`.
+
+## Mounting under a path prefix (the portal: `app.<base>/<product>/`)
+
+Under the portal every product is served from one origin at its own path. There is **one seam**,
+the mount prefix, and every path-bearing field must carry it. For a product at `/deepr`:
+
+```go
+auth, err := vaioidc.New(ctx, vaioidc.Config{
+    CallbackURL:       "https://app.vai.team/deepr/auth/callback", // ⇒ the redirect_uri, byte-for-byte
+    LoginPath:         "/deepr/auth/login",
+    PostLoginRedirect: "/deepr/",
+    LogoutRedirect:    "https://app.vai.team/deepr/",               // ⇒ post_logout_redirect_uri
+    CookiePath:        "/deepr",                                    // session AND the state/PKCE cookies
+    CookieName:        "deepr_session",                             // unique per product on the origin
+    // …
+})
+r.Mount("/deepr/auth", auth.Routes())
+skip := auth.SkipPathsWithPrefix("/deepr/auth")
+```
+
+- **The `redirect_uri` the IdP sees is `CallbackURL` exactly** —
+  `https://app.<base>/<product>/auth/callback`. It must be in the realm client's *Valid redirect
+  URIs*, and `LogoutRedirect` in its *Valid post logout redirect URIs*. A mismatch fails **at
+  Keycloak** (`Invalid parameter: redirect_uri`), on a page the product cannot improve, so register
+  both before the first deploy.
+- **`CookiePath` scopes the state and PKCE cookies too**, so it must be a prefix of the callback
+  path, or the callback arrives without them and every login ends at `LogoutRedirect`.
+- **`CookieName` must differ per product.** One origin, many products: two products sharing a name
+  (and a `CookiePath` of `/`) overwrite each other's session. Do not set a cookie `Domain`; the
+  one-origin model depends on host-only cookies.
+- ⛔ **Do not let the reverse proxy strip the prefix.** `RequireSession` builds the post-login deep
+  link from the request's own path, and `session/sync.js` derives its endpoints from the path it was
+  served at — both lose `/deepr` if the upstream sees `/…` and send the browser to the wrong product.
+  Serve the application under the prefix end to end.
 
 ## UserResolver — enrich or reject at login
 
@@ -472,6 +552,9 @@ vaioidc.Config{
                                        // cannot answer (default false = pre-v0.20.0). Needs no realm
                                        // change. See "Identity sync" below.
     RequireEmailDomain   string        // reject logins whose email domain != this
+    RequireEmailVerified bool          // reject logins without email_verified=true (v0.24.0).
+                                       // ⛔ SET IT WHENEVER RequireEmailDomain IS SET — New() warns
+                                       // otherwise. See "Staff surfaces" below.
     DiscoveryRetryBudget time.Duration // retry cold-boot discovery failures (default 90s; <0 disables)
     IssuerURLOverride    string        // accept a different iss than the discovery URL (see below)
     Logger               *slog.Logger  // (default slog.Default())

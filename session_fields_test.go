@@ -95,12 +95,13 @@ func TestSessionCarriesEveryUserFieldOrLedgersWhyNot(t *testing.T) {
 // is the arm that would catch `p.OrgID = u.Email`.
 func TestSessionRoundTripsThePersistedFields(t *testing.T) {
 	in := &User{
-		Sub:        "sub-1",
-		Email:      "person@example.com",
-		Name:       "A Person",
-		OrgID:      "org-1",
-		Claims:     map[string]string{"k": "v"},
-		RealmRoles: []string{"role-a"},
+		Sub:           "sub-1",
+		Email:         "person@example.com",
+		EmailVerified: true,
+		Name:          "A Person",
+		OrgID:         "org-1",
+		Claims:        map[string]string{"k": "v"},
+		RealmRoles:    []string{"role-a"},
 		Memberships: []Membership{
 			{OrgID: "org-1", OrgName: "One", OrgSlug: "one", Role: "owner", TeamIDs: []string{"t1"}},
 		},
@@ -114,6 +115,10 @@ func TestSessionRoundTripsThePersistedFields(t *testing.T) {
 
 	if out.Sub != in.Sub || out.Email != in.Email || out.Name != in.Name || out.OrgID != in.OrgID {
 		t.Errorf("identity fields did not round-trip: %+v", out)
+	}
+	if !out.EmailVerified {
+		t.Errorf("EmailVerified did not round-trip — every verified-email gate would refuse a " +
+			"verified person on their second request")
 	}
 	if len(out.Memberships) != 1 || out.Memberships[0].OrgID != "org-1" ||
 		len(out.Memberships[0].TeamIDs) != 1 || out.Memberships[0].TeamIDs[0] != "t1" {
@@ -143,6 +148,7 @@ func userToPayloadFieldNames() []struct{ user, payload string } {
 	return []struct{ user, payload string }{
 		{"Sub", "Sub"},
 		{"Email", "Email"},
+		{"EmailVerified", "Ev"},
 		{"Name", "Name"},
 		{"OrgID", "OrgID"},
 		{"Memberships", "Mbs"},

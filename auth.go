@@ -50,6 +50,15 @@ func New(ctx context.Context, cfg Config) (*Auth, error) {
 	// produces a permanently-broken consumer pod. Set
 	// `Config.DiscoveryRetryBudget = -1` (or any negative) to opt out
 	// and preserve the pre-v0.8.0 single-shot semantics.
+	// v0.24.0: a domain gate on an unverified email is not an identity check.
+	// Warn rather than refuse — the combination was the only one available
+	// before this release, and a boot failure on upgrade is not opt-in.
+	if cfg.RequireEmailDomain != "" && !cfg.RequireEmailVerified {
+		cfg.Logger.Warn(logMsgDomainGateUnverified,
+			slog.String(logKeyComponent, logComponent),
+			slog.String(logKeyRequiredDomain, cfg.RequireEmailDomain))
+	}
+
 	provider, err := discoverWithRetry(ctx, cfg.Logger, cfg.DiscoveryRetryBudget,
 		cfg.discoveryURL(), cfg.ClientID, cfg.ClientSecret, cfg.CallbackURL, cfg.IssuerURLOverride, cfg.Scopes)
 	if err != nil {
@@ -579,6 +588,24 @@ func (a *Auth) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 
 	// Extract user claims.
 	user := a.provider.extractUser(idToken, a.logger, a.cfg.ExtraClaims)
+
+	// Verified-email gate (v0.24.0). Runs first: an unverified address makes
+	// the domain gate's verdict meaningless, and the rejection must not depend
+	// on which domain the (unproven) address claims.
+	if a.cfg.RequireEmailVerified && (user == nil || !user.EmailVerified) {
+		var sub string
+		if user != nil {
+			sub = user.Sub
+		}
+		a.logger.Warn(logMsgEmailUnverifiedRejected,
+			slog.String(logKeyComponent, logComponent),
+			slog.String(logKeyReason, logReasonEmailUnverified),
+			slog.String(logKeySub, sub),
+			slog.String(logKeyClientIP, clientIP(r)),
+		)
+		http.Redirect(w, r, a.cfg.LogoutRedirect, http.StatusFound)
+		return
+	}
 
 	// Email-domain gate. Runs BEFORE UserResolver so a
 	// custom resolver does not need to know about the rule and so the

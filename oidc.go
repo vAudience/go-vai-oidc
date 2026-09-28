@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
@@ -180,6 +181,7 @@ func (p *oidcProvider) extractUser(idToken *gooidc.IDToken, logger *slog.Logger,
 	if email, ok := claims[claimEmail].(string); ok {
 		user.Email = email
 	}
+	user.EmailVerified = extractEmailVerified(claims)
 	if name, ok := claims[claimName].(string); ok {
 		user.Name = name
 	}
@@ -207,6 +209,24 @@ func (p *oidcProvider) extractUser(idToken *gooidc.IDToken, logger *slog.Logger,
 	}
 
 	return user
+}
+
+// extractEmailVerified reads the standard `email_verified` claim (v0.24.0).
+//
+// A JSON boolean is the spec shape (OIDC Core §5.1). The string forms "true"
+// and "false" are accepted because some providers (and some Keycloak mapper
+// configurations) serialise the claim as a string; anything else — absent,
+// null, a number, "yes" — reads as NOT verified. Verification is never
+// inferred: an unreadable claim fails closed.
+func extractEmailVerified(claims map[string]interface{}) bool {
+	switch v := claims[claimEmailVerified].(type) {
+	case bool:
+		return v
+	case string:
+		return strings.EqualFold(v, claimValueTrue)
+	default:
+		return false
+	}
 }
 
 // extractRealmRoles reads Keycloak's standard `realm_access.roles` ID-token

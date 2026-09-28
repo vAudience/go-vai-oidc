@@ -37,6 +37,10 @@
 // This gate checks the email DOMAIN only — it does NOT inspect the
 // email_verified claim, so it is not, by itself, a trust boundary on a
 // multi-tenant IdP where a user might hold an unverified address in the
-// target domain. Enforce email_verified in your UserResolver (or at the
-// IdP) if you need that guarantee. See SECURITY.md.
+// target domain. Set Config.RequireEmailVerified (v0.24.0) alongside it.
+// See SECURITY.md.
+//
+// Staff surfaces (v0.24.0): Auth.RequireStaff(VAIStaffPolicy()) is the one
+// staff predicate — a session, email_verified, an exact @vaudience.ai domain
+// and the obol-system-admin or vai-business-manager realm role.
 package vaioidc
