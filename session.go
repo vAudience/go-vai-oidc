@@ -22,6 +22,7 @@ import (
 type sessionPayload struct {
 	Sub     string            `json:"sub"`
 	Email   string            `json:"email"`
+	Ev      bool              `json:"ev,omitempty"` // email_verified claim (v0.24.0; absent on older cookies = false, fail-closed)
 	Name    string            `json:"name"`
 	OrgID   string            `json:"oid,omitempty"` // active organization ID (resolved by UserResolver)
 	Mbs     []Membership      `json:"mbs,omitempty"` // full org membership set (v0.14.0; for multi-org pickers)
@@ -80,14 +81,15 @@ func (p *sessionPayload) isGrantMinted() bool {
 // toUser converts the payload to a public User.
 func (p *sessionPayload) toUser() *User {
 	return &User{
-		Sub:         p.Sub,
-		Email:       p.Email,
-		Name:        p.Name,
-		OrgID:       p.OrgID,
-		Memberships: p.Mbs,
-		Claims:      p.Claims,
-		RealmRoles:  p.Rls,
-		SessionID:   p.Sid,
+		Sub:           p.Sub,
+		Email:         p.Email,
+		EmailVerified: p.Ev,
+		Name:          p.Name,
+		OrgID:         p.OrgID,
+		Memberships:   p.Mbs,
+		Claims:        p.Claims,
+		RealmRoles:    p.Rls,
+		SessionID:     p.Sid,
 	}
 }
 
@@ -96,6 +98,7 @@ func (p *sessionPayload) toUser() *User {
 func (p *sessionPayload) fromUser(u *User) {
 	p.Sub = u.Sub
 	p.Email = u.Email
+	p.Ev = u.EmailVerified
 	p.Name = u.Name
 	p.OrgID = u.OrgID
 	p.Mbs = u.Memberships

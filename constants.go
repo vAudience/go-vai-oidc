@@ -71,6 +71,8 @@ const (
 // ID token claim names.
 const (
 	claimEmail             = "email"
+	claimEmailVerified     = "email_verified" // v0.24.0
+	claimValueTrue         = "true"           // string-serialised boolean claim form
 	claimName              = "name"
 	claimPreferredUsername = "preferred_username"
 	claimRealmAccess       = "realm_access"
@@ -483,4 +485,36 @@ const (
 	// was served from — refused rather than guessed, because a guessed endpoint
 	// produces a script that loads, runs, and reconciles nothing.
 	logMsgSyncScriptPath = "go-vai-oidc: session sync script served from an unusable path; refusing to guess the mount"
+)
+
+// Verified-email gate + staff predicate (v0.24.0).
+const (
+	logMsgEmailUnverifiedRejected = "OIDC callback: unverified email rejected"
+	logReasonEmailUnverified      = "email_not_verified"
+	logMsgDomainGateUnverified    = "RequireEmailDomain is set without RequireEmailVerified; a domain match on an unverified email is not an identity check (see SECURITY.md)"
+
+	logMsgStaffRefused       = "staff gate refused request"
+	logMsgStaffPolicyInvalid = "staff gate policy is invalid; refusing every request"
+	logKeyStaffReason        = "staff_reason"
+
+	staffReasonNoSession   = "no_session"
+	staffReasonUnverified  = "email_not_verified"
+	staffReasonEmail       = "email_malformed"
+	staffReasonDomain      = "email_domain_mismatch"
+	staffReasonRole        = "role_missing"
+	staffReasonPolicy      = "policy_invalid"
+	staffForbiddenErrorMsg = "staff access required"
+)
+
+// The vAudience staff predicate, operator ruling D2 (2026-09-28,
+// vaik8s docs/MASTERPLAN-PORTAL.md §R). Exported so consumers that must name a
+// role elsewhere (a UI badge, an audit line) read the same strings; the policy
+// itself is VAIStaffPolicy().
+const (
+	// StaffDomainVAudience is the only email domain whose holders may be staff.
+	StaffDomainVAudience = "vaudience.ai"
+	// RealmRoleObolSystemAdmin is the platform-operator realm role.
+	RealmRoleObolSystemAdmin = "obol-system-admin"
+	// RealmRoleVAIBusinessManager is the business-staff realm role.
+	RealmRoleVAIBusinessManager = "vai-business-manager"
 )

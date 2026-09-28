@@ -84,3 +84,26 @@ var (
 	// prove a match without a parseable email.
 	ErrEmailClaimMissing = errors.New("vai-oidc: email claim missing or malformed; cannot enforce required domain")
 )
+
+// Verified-email and staff errors (v0.24.0).
+var (
+	// ErrEmailNotVerified indicates Config.RequireEmailVerified is set (or a
+	// StaffPolicy is evaluated) and the ID token's `email_verified` claim is not
+	// true.
+	ErrEmailNotVerified = errors.New("vai-oidc: email address is not verified")
+
+	// ErrNotStaff indicates a StaffPolicy refused an authenticated user: a
+	// verified in-domain address and at least one of the policy's realm roles
+	// are ALL required. Wrapped together with the specific cause
+	// (ErrEmailNotVerified, ErrEmailClaimMissing, ErrEmailDomainMismatch, or
+	// ErrStaffRoleMissing), so errors.Is works for either question.
+	ErrNotStaff = errors.New("vai-oidc: not staff")
+
+	// ErrStaffRoleMissing indicates the user holds none of the StaffPolicy's
+	// realm roles.
+	ErrStaffRoleMissing = errors.New("vai-oidc: no staff realm role")
+
+	// ErrStaffPolicyInvalid indicates a StaffPolicy with no domain, a malformed
+	// domain, or no roles. A policy that cannot be evaluated refuses everyone.
+	ErrStaffPolicyInvalid = errors.New("vai-oidc: invalid staff policy")
+)

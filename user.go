@@ -11,6 +11,23 @@ type User struct {
 	// Email is the user's email address from the ID token (may be empty if scope not granted).
 	Email string `json:"email"`
 
+	// EmailVerified is the ID token's `email_verified` claim (v0.24.0). False
+	// when the claim is absent, false, or not a boolean-shaped value — the
+	// library never infers verification.
+	//
+	// ⛔ A DOMAIN MATCH ON Email IS NOT AN IDENTITY CHECK WITHOUT IT. A realm that
+	// brokers a multi-tenant IdP (Microsoft Entra for ANY tenant) receives
+	// whatever `mail` a tenant administrator chose to set — the "nOAuth" class —
+	// so `someone@vaudience.ai` can arrive from a tenant vAudience does not own.
+	// Only this claim says the realm itself proved the address. Gate on it with
+	// Config.RequireEmailVerified or a StaffPolicy.
+	//
+	// ⚠️ A session minted before v0.24.0 decodes this as FALSE (the field was not
+	// persisted). Every gate that reads it therefore fails CLOSED for such a
+	// session until the person signs in again — the safe direction, and the one
+	// to expect on the first request after an upgrade.
+	EmailVerified bool `json:"email_verified,omitempty"`
+
 	// Name is the user's display name from the ID token (may be empty).
 	Name string `json:"name"`
 

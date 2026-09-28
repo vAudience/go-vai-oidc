@@ -208,6 +208,22 @@ type Config struct {
 	// Empty (default) = no domain enforcement.
 	RequireEmailDomain string
 
+	// Optional: Verified-email gate (v0.24.0).
+	//
+	// When true, the callback refuses a login whose ID token does not carry
+	// `email_verified: true` (redirect to LogoutRedirect, WARN log with reason
+	// `email_not_verified`), BEFORE RequireEmailDomain and before UserResolver.
+	//
+	// ⛔ RECOMMENDED WHENEVER RequireEmailDomain IS SET. The domain gate reads
+	// the `email` claim only; on a realm brokering a multi-tenant IdP a tenant
+	// admin can put any address there ("nOAuth"). New() logs a WARN when the
+	// domain gate is configured without this one. It is not the default only
+	// because turning it on silently would lock out every consumer whose realm
+	// does not map the claim.
+	//
+	// Default: false (no verification enforced — pre-v0.24.0 behaviour).
+	RequireEmailVerified bool
+
 	// Optional: Observability.
 	Logger *slog.Logger // Structured logger (default: slog.Default())
 

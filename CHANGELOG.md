@@ -1,5 +1,52 @@
 # Changelog
 
+## v0.24.0 — 2026-09-28
+
+**`RequireEmailVerified`, the ONE staff predicate, and path-prefix mounts documented** (go-vai-oidc#10,
+vaik8s MASTERPLAN-PORTAL §R rows 2/3/7–8). Additive and backward-compatible: new fields, a new
+middleware, no exported API changed, every new behaviour opt-in.
+
+### ⛔ The defect
+
+`RequireEmailDomain` matched the `email` claim's domain and never read `email_verified`, and `User`
+had no field for it. Realm `vaudience` brokers Microsoft for **any** Entra tenant, where a tenant
+admin can set any `mail` ("nOAuth"), so a domain match was not an identity check — only the realm's
+`verifyEmail: true` stood in the way. And three staff surfaces (obol `/console`, vaisite admin,
+conduit admin) were each about to hand-roll the same security predicate.
+
+### What changed
+
+- **`User.EmailVerified`** from the ID token's `email_verified` claim (bool, or the string
+  `"true"`; anything else — absent, null, `"yes"` — is false, never inferred). Persisted in the
+  session (`ev`); ⚠️ a pre-v0.24.0 cookie decodes it as false, so gates that read it fail CLOSED
+  until the next login.
+- **`Config.RequireEmailVerified`** (default false): the callback refuses a login without
+  `email_verified=true` → `LogoutRedirect`, WARN reason `email_not_verified`, before the domain gate
+  and before `UserResolver`. **`New()` logs a WARN when `RequireEmailDomain` is set without it** —
+  the recommended combination, not forced, because forcing it on upgrade is not opt-in.
+- **`StaffPolicy` / `VAIStaffPolicy()` / `StaffPolicy.Check` / `User.IsStaff` /
+  `Auth.RequireStaff(policy)`** — operator ruling D2: session AND `email_verified` AND the parsed
+  address's domain equals `vaudience.ai` exactly (`evilvaudience.ai`, `x.vaudience.ai`, display-name
+  forms and anything `net/mail` cannot parse as a bare address all fail) AND realm role
+  `obol-system-admin` OR `vai-business-manager`. `RequireStaff` includes `RequireSession` (no session
+  → the same login redirect / 401), refuses a non-staff user with 403 JSON (or
+  `StaffPolicy.Forbidden`), and an invalid policy is logged at ERROR and refuses everyone.
+  Exported constants `StaffDomainVAudience`, `RealmRoleObolSystemAdmin`,
+  `RealmRoleVAIBusinessManager`; errors `ErrEmailNotVerified`, `ErrNotStaff`, `ErrStaffRoleMissing`,
+  `ErrStaffPolicyInvalid`.
+- **README: "Mounting under a path prefix"** — the one seam (`CallbackURL`, `LoginPath`,
+  `PostLoginRedirect`, `LogoutRedirect`, `CookiePath`, a per-product `CookieName`), the resulting
+  `redirect_uri` that must be registered in the realm, and ⛔ why the proxy must not strip the prefix.
+- Tests: `staff_test.go` drives signed ID tokens through the real callback and `RequireStaff` — an
+  unverified in-domain token is refused at login, a verified in-domain user without a role gets
+  403, and a staff login succeeds; `TestPathPrefixMount` pins the redirect_uri and cookie paths.
+- `ClientVersion` = `go-vai-oidc/0.24.0`.
+
+### Adopting it
+
+Staff surfaces: `r.Use(auth.RequireStaff(vaioidc.VAIStaffPolicy()))` in place of a hand-rolled role
+check. Any consumer with `RequireEmailDomain` set: add `RequireEmailVerified: true`.
+
 ## v0.23.2 — 2026-09-28
 
 **`/auth/logout` names the client on every end-session URL.** A behaviour fix; no API or config
