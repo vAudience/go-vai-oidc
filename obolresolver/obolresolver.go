@@ -346,7 +346,7 @@ const headerObolClientVersion = "X-Obol-Client-Version"
 // module, which cannot carry it at all. So the honest answer to "which code
 // composed this request" is a version string this file owns, and it must be
 // bumped with versions.yaml (TestClientVersionMatchesTheManifest pins it).
-const ClientVersion = "go-vai-oidc/0.22.0"
+const ClientVersion = "go-vai-oidc/0.23.0"
 
 // admitLanding turns obol's landing object into a value the callback may act
 // on, or nil.
@@ -386,10 +386,9 @@ func admitLanding(in *IdentityEnsureLanding, allowedHosts []string) *vaioidc.Lan
 		return out
 	}
 	// Only the arms that actually redirect are worth validating; for anything
-	// else the URL is not carried at all.
-	switch in.Decision {
-	case vaioidc.LandingDecisionOnboarding, vaioidc.LandingDecisionOrgSelection:
-	default:
+	// else the URL is not carried at all. The list is vaioidc's, shared with
+	// Landing.RedirectTarget, so admission and redirection cannot drift apart.
+	if !vaioidc.LandingDecisionRedirects(in.Decision) {
 		return out
 	}
 	u, err := url.Parse(in.LandingURL)

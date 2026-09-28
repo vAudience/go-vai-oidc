@@ -331,7 +331,7 @@ type User struct {
 
 ```go
 type Landing struct {
-    Decision string // "onboarding" | "org_selection" | "ready"
+    Decision string // "onboarding" | "org_selection" | "closed_beta" (v0.23.0) | "ready"
     URL      string // ABSOLUTE, on the identity backend's origin; empty on "ready"
 }
 
@@ -355,6 +355,14 @@ pinned a person to an auto-minted personal workspace with no way off it.
 ⚠️ **`OrgID` keeps being filled in every arm, including `org_selection`.** A consumer that ignores
 `Landing` degrades to the previous behaviour — never to an empty org id, which several services read
 as *all tenants*.
+
+⚠️ **`closed_beta` (v0.23.0) redirects like `onboarding`, and to a PUBLIC page.** It is served where
+`onboarding` would be — a verified person with no real organization — on a deployment not admitting
+new companies, so `memberships` is empty and `OrgID` is empty on that arm by construction. Below
+v0.23.0 the decision was "unknown", the login finished org-less on the consumer's own destination,
+and the consumer then refused the person without saying why. `vaioidc.LandingDecisionRedirects` is
+the one list of redirecting decisions; `RedirectTarget` and `obolresolver`'s URL admission both read
+it.
 
 ⚠️ **It is not persisted in the session, deliberately.** It is a verdict about one login, so a
 session copy goes stale the moment the person acts on it.

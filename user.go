@@ -87,6 +87,16 @@ const (
 	// default; the person must choose. Send the browser to Landing.URL.
 	LandingDecisionOrgSelection = "org_selection"
 
+	// LandingDecisionClosedBeta — a verified person with no real organization on
+	// a deployment that is not admitting new companies (v0.23.0; obol ADR-360).
+	// It is served in exactly the population that would otherwise get
+	// `onboarding`, and it is a REDIRECT arm for the same reason: before this
+	// constant, the "unknown means no opinion" rule finished the login org-less
+	// on the consumer's own destination, which then refused the person with a
+	// raw error instead of telling them why. Landing.URL names a PUBLIC page on
+	// the backend's origin, so it needs no session there.
+	LandingDecisionClosedBeta = "closed_beta"
+
 	// LandingDecisionReady — proceed to this service's own destination. URL is
 	// empty in this arm by design.
 	LandingDecisionReady = "ready"
@@ -126,13 +136,29 @@ func (l *Landing) RedirectTarget() (string, bool) {
 	if l == nil || l.URL == "" {
 		return "", false
 	}
-	switch l.Decision {
-	case LandingDecisionOnboarding, LandingDecisionOrgSelection:
-		return l.URL, true
-	default:
+	if !LandingDecisionRedirects(l.Decision) {
 		// `ready` and every value this version does not compile. A decision the
 		// library cannot interpret must not move the user (see the const block).
 		return "", false
+	}
+	return l.URL, true
+}
+
+// LandingDecisionRedirects reports whether a decision is one that sends the
+// browser to Landing.URL.
+//
+// ⚠️ IT IS THE ONE LIST, AND IT EXISTS BECAUSE THERE WERE TWO. RedirectTarget
+// and obolresolver's URL admission each carried their own switch, so a new
+// redirect arm added to one and not the other either redirected to a URL
+// nothing had validated or validated a URL nothing would follow — and the
+// second fails silently, which is exactly the closed_beta defect v0.23.0
+// fixes. Both call sites read this function; add a redirect arm HERE.
+func LandingDecisionRedirects(decision string) bool {
+	switch decision {
+	case LandingDecisionOnboarding, LandingDecisionOrgSelection, LandingDecisionClosedBeta:
+		return true
+	default:
+		return false
 	}
 }
 

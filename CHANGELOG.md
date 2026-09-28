@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.23.0 — 2026-09-28
+
+**`closed_beta` is a redirect landing decision.** Additive and backward-compatible: one new constant,
+one new exported predicate, no config.
+
+### ⛔ The defect
+
+obol (GANGWAY G-03, ADR-360, obol#132) serves a fourth landing decision on
+`/identity/ensure`, `closed_beta`, in exactly the population that would otherwise get `onboarding`
+— a verified person with no real organization — on a deployment configured to admit no new
+companies. Its `landing_url` is an absolute URL on obol's origin (`/app/closed-beta`, a public page)
+and `memberships` is `[]`. v0.22.0 treated the value as unknown, which is correct forward-compatibly
+and wrong here: `admitLanding` dropped the URL, `RedirectTarget` answered false, and because a
+non-nil landing makes an empty membership list admissible, the login finished **org-less on the
+consumer's own destination**, which then refused the person with a raw error instead of the page
+telling them why.
+
+### What changed
+
+- **`LandingDecisionClosedBeta = "closed_beta"`**, a redirect arm.
+- **`LandingDecisionRedirects(decision) bool`** — the ONE list of decisions that send the browser to
+  `Landing.URL`. `Landing.RedirectTarget` and `obolresolver.admitLanding` each carried their own
+  switch before; a new arm added to one only would either redirect to an unvalidated URL or validate
+  a URL nothing follows. Both now call the predicate.
+- `closed_beta`'s URL goes through the same admission as every redirect arm: absolute http(s), a
+  host, no userinfo, `AllowedLandingHosts` when configured.
+- The callback appends `consumer_return_to` to the closed-beta URL exactly as for onboarding.
+  Harmless and deliberately not special-cased: the page is public and may ignore it, and it keeps
+  the callback free of a per-decision branch.
+- An unknown decision still never moves the user (its test now uses `future_decision`).
+- `ClientVersion` = `go-vai-oidc/0.23.0`.
+
 ## v0.22.0 — 2026-09-23
 
 **Session sync no longer signs out sessions minted by `IssueSession` (inline / ROPC login).**

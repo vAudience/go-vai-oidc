@@ -98,6 +98,15 @@ func TestLanding_DecisionArms(t *testing.T) {
 			why:         "the owner's own request: surface the org selection at login",
 		},
 		{
+			name:        "closed_beta with a URL redirects",
+			data:        `{"user_id":"u","memberships":[],"landing":{"decision":"closed_beta","landing_url":"https://obol.example.com/app/closed-beta"}}`,
+			wantDec:     vaioidc.LandingDecisionClosedBeta,
+			wantRedirTo: "https://obol.example.com/app/closed-beta",
+			why: "v0.23.0: before this arm the decision was 'unknown', the URL was dropped, " +
+				"and a person obol had deliberately not admitted finished the login org-less " +
+				"on a consumer that then refused them with a raw error",
+		},
+		{
 			name:        "ready never redirects",
 			data:        `{"user_id":"u","memberships":[{"org_id":"o1"}],"landing":{"decision":"ready","landing_url":""}}`,
 			wantDec:     vaioidc.LandingDecisionReady,
@@ -106,8 +115,8 @@ func TestLanding_DecisionArms(t *testing.T) {
 		},
 		{
 			name:        "a decision this version does not know never moves the user",
-			data:        `{"user_id":"u","memberships":[{"org_id":"o1"}],"landing":{"decision":"quarantine","landing_url":"` + publicURL + `"}}`,
-			wantDec:     "quarantine",
+			data:        `{"user_id":"u","memberships":[{"org_id":"o1"}],"landing":{"decision":"future_decision","landing_url":"` + publicURL + `"}}`,
+			wantDec:     "future_decision",
 			wantRedirTo: "",
 			why: "⚠️ FORWARD COMPATIBILITY IS A SAFETY PROPERTY HERE. obol may grow this " +
 				"vocabulary, and a value this library cannot interpret must leave the login " +
@@ -306,4 +315,62 @@ func TestLanding_ZeroMembershipsWithADecisionIsNotARejection(t *testing.T) {
 				"no decision to honour; got (%v, %v)", u, err)
 		}
 	})
+}
+
+// TestLanding_ClosedBetaIsValidatedLikeEveryRedirectArm pins that closed_beta's
+// URL goes through the SAME admission as onboarding's — v0.23.0 added it as a
+// redirect arm, and a redirect arm whose URL is not validated is the one shape
+// worse than the defect it fixed.
+func TestLanding_ClosedBetaIsValidatedLikeEveryRedirectArm(t *testing.T) {
+	const good = "https://obol.example.com/app/closed-beta"
+	cases := []struct {
+		name    string
+		url     string
+		allowed []string
+		want    string
+	}{
+		{"a valid URL is admitted", good, nil, good},
+		{"a pinned host that names it is admitted", good, []string{"obol.example.com"}, good},
+		{"a pinned host that does not name it is refused", good, []string{"obol.internal.example.com"}, ""},
+		{"javascript scheme is refused", "javascript:alert(1)", nil, ""},
+		{"a relative path is refused", "/app/closed-beta", nil, ""},
+		{"embedded credentials are refused", "https://u:p@obol.example.com/app/closed-beta", nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body, _ := json.Marshal(map[string]any{
+				"user_id":     "u",
+				"memberships": []map[string]any{},
+				"landing":     map[string]any{"decision": "closed_beta", "landing_url": tc.url},
+			})
+			srv := landingServer(t, string(body), nil)
+			defer srv.Close()
+
+			// AllowEmptyMembership stays FALSE: the closed-beta population holds no
+			// real organization by definition, and the decision must carry the
+			// login rather than the flag rejecting it.
+			r := New(Config{BaseURL: srv.URL, Client: srv.Client(), AllowedLandingHosts: tc.allowed})
+			u, err := r(context.Background(), &vaioidc.User{Sub: "sub-beta"})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if u == nil || u.Landing == nil {
+				t.Fatal("a closed_beta decision with zero memberships must return the user " +
+					"with its Landing, never (nil, nil) — that bounces the person to logout")
+			}
+			if u.Landing.Decision != vaioidc.LandingDecisionClosedBeta {
+				t.Errorf("decision = %q", u.Landing.Decision)
+			}
+			got, ok := u.Landing.RedirectTarget()
+			if tc.want == "" {
+				if ok || u.Landing.URL != "" {
+					t.Errorf("URL %q admitted / RedirectTarget()=%q,%v — must be refused", u.Landing.URL, got, ok)
+				}
+				return
+			}
+			if !ok || got != tc.want {
+				t.Errorf("RedirectTarget() = %q,%v want %q,true", got, ok, tc.want)
+			}
+		})
+	}
 }
