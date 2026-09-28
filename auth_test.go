@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -99,24 +100,43 @@ func TestParseStateCookie(t *testing.T) {
 	assert.Equal(t, "/path|extra", redirect)
 }
 
+// TestBuildLogoutURL pins v0.23.2: client_id rides on EVERY end-session URL.
+// The no-hint arm is the one that matters — a browser with no session cookie
+// sends no id_token_hint, and without client_id Keycloak cannot validate
+// post_logout_redirect_uri and answers 400, leaving the SSO session standing.
 func TestBuildLogoutURL(t *testing.T) {
-	url := buildLogoutURL(
-		"https://kc.example.com/realms/test/protocol/openid-connect/logout",
-		"id-token-value",
-		"https://app.example.com/",
-	)
-	assert.Contains(t, url, "id_token_hint=id-token-value")
-	assert.Contains(t, url, "post_logout_redirect_uri=")
-}
-
-func TestBuildLogoutURL_NoHint(t *testing.T) {
-	url := buildLogoutURL(
-		"https://kc.example.com/realms/test/protocol/openid-connect/logout",
-		"",
-		"/",
-	)
-	assert.NotContains(t, url, "id_token_hint")
-	assert.Contains(t, url, "post_logout_redirect_uri=")
+	const endSession = "https://kc.example.com/realms/test/protocol/openid-connect/logout"
+	cases := []struct {
+		name     string
+		clientID string
+		hint     string
+		redirect string
+		want     map[string]string // param → value; "" means must be absent
+	}{
+		{"with a hint", "obol-admin", "id-token-value", "https://app.example.com/",
+			map[string]string{"client_id": "obol-admin", "id_token_hint": "id-token-value",
+				"post_logout_redirect_uri": "https://app.example.com/"}},
+		{"without a hint — the no-session logout", "obol-admin", "", "https://app.example.com/",
+			map[string]string{"client_id": "obol-admin", "id_token_hint": "",
+				"post_logout_redirect_uri": "https://app.example.com/"}},
+		{"no redirect configured", "obol-admin", "", "",
+			map[string]string{"client_id": "obol-admin", "post_logout_redirect_uri": ""}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := buildLogoutURL(endSession, tc.clientID, tc.hint, tc.redirect)
+			u, err := url.Parse(raw)
+			require.NoError(t, err)
+			q := u.Query()
+			for k, v := range tc.want {
+				if v == "" {
+					assert.False(t, q.Has(k), "%s must be absent: %s", k, raw)
+					continue
+				}
+				assert.Equal(t, v, q.Get(k), "param %s in %s", k, raw)
+			}
+		})
+	}
 }
 
 func TestWantsBrowser(t *testing.T) {
@@ -768,3 +788,39 @@ func noopLogger() *slog.Logger {
 type discard struct{}
 
 func (discard) Write(p []byte) (int, error) { return len(p), nil }
+
+// TestHandleLogout_NoSessionStillNamesTheClient is the handler-level arm of
+// v0.23.2: a browser arriving with no session cookie (from another product, or
+// after its cookie expired) must still produce an end-session URL the provider
+// can validate — client_id and the redirect, and no hint to send.
+func TestHandleLogout_NoSessionStillNamesTheClient(t *testing.T) {
+	a := &Auth{
+		sessionKey: testKey(t),
+		cfg: Config{
+			ClientID:       "obol-admin",
+			CookieName:     "vai_test",
+			CookiePath:     "/",
+			LogoutRedirect: "https://app.example.com/",
+			InsecureCookie: true,
+		},
+		logger: noopLogger(),
+		provider: &oidcProvider{
+			endSessionURL: "https://kc.example.com/realms/test/protocol/openid-connect/logout",
+		},
+	}
+	r := chi.NewRouter()
+	r.Mount("/auth", a.Routes())
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/auth/logout", nil))
+
+	require.Equal(t, http.StatusFound, w.Code)
+	loc, err := url.Parse(w.Header().Get("Location"))
+	require.NoError(t, err)
+	q := loc.Query()
+	assert.Equal(t, "obol-admin", q.Get("client_id"),
+		"without a hint, client_id is the only way the provider can validate "+
+			"post_logout_redirect_uri — Keycloak answers 400 and the SSO session survives")
+	assert.False(t, q.Has("id_token_hint"))
+	assert.Equal(t, "https://app.example.com/", q.Get("post_logout_redirect_uri"))
+}

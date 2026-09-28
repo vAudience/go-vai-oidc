@@ -885,7 +885,7 @@ func (a *Auth) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 	// Redirect to Keycloak end-session endpoint if available (federated logout).
 	if a.provider.endSessionURL != "" {
-		logoutURL := buildLogoutURL(a.provider.endSessionURL, idTokenHint, a.cfg.LogoutRedirect)
+		logoutURL := buildLogoutURL(a.provider.endSessionURL, a.cfg.ClientID, idTokenHint, a.cfg.LogoutRedirect)
 		http.Redirect(w, r, logoutURL, http.StatusFound)
 		return
 	}
@@ -931,12 +931,28 @@ func isValidRedirect(redirect string) bool {
 }
 
 // buildLogoutURL constructs the Keycloak RP-Initiated Logout URL.
-func buildLogoutURL(endSessionURL, idTokenHint, postLogoutRedirect string) string {
+//
+// ⚠️ client_id IS SENT ON EVERY LOGOUT, NOT ONLY WHEN THE HINT IS MISSING
+// (v0.23.2). Without a session cookie there is no id_token_hint, and with
+// neither a hint nor a client_id the provider cannot tell whose post-logout
+// list to validate post_logout_redirect_uri against: Keycloak answers HTTP 400
+// and the SSO session stays standing — the next "Sign in" silently returns the
+// same account (measured on styx: 400 without client_id, 302 with it).
+// RP-Initiated Logout 1.0 §2 defines client_id for exactly this case and
+// permits it beside a hint, where the OP checks it against the hint's `aud` —
+// which this client's own ID token always satisfies. Sending it always is one
+// branch fewer than sending it conditionally and cannot be wrong in either arm.
+// The redirect is still validated by the provider against the client's
+// registered list; client_id only names which list.
+func buildLogoutURL(endSessionURL, clientID, idTokenHint, postLogoutRedirect string) string {
 	u, err := url.Parse(endSessionURL)
 	if err != nil {
 		return postLogoutRedirect
 	}
 	q := u.Query()
+	if clientID != "" {
+		q.Set("client_id", clientID)
+	}
 	if idTokenHint != "" {
 		q.Set("id_token_hint", idTokenHint)
 	}

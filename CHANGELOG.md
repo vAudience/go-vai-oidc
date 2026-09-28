@@ -1,5 +1,43 @@
 # Changelog
 
+## v0.23.2 — 2026-09-28
+
+**`/auth/logout` names the client on every end-session URL.** A behaviour fix; no API or config
+change (`buildLogoutURL` is unexported).
+
+### ⛔ The defect
+
+`handleLogout` sends `id_token_hint` from the session cookie and `post_logout_redirect_uri` from
+config — and no `client_id`. When the browser holds **no session cookie** (a person arriving at a
+public page such as obol's `/app/closed-beta` from another product, or an expired cookie), there is
+no hint, so the provider cannot tell whose post-logout list to validate the redirect against:
+Keycloak answers **HTTP 400** and the SSO session stays standing, so the next "Sign in" silently
+returns the same account (obol ADR-197).
+
+### What changed
+
+- `client_id=<Config.ClientID>` is sent on **every** end-session URL, with or without a hint.
+  RP-Initiated Logout 1.0 §2 defines it for the hint-less case and permits it beside a hint (the OP
+  checks it against the hint's `aud`, which this client's own ID token satisfies); always sending it
+  is one branch fewer and correct in both arms. The provider still validates the redirect against
+  the client's registered list.
+- `TestBuildLogoutURL` is now a table (with / without a hint / no redirect);
+  `TestHandleLogout_NoSessionStillNamesTheClient` drives the handler with no cookie.
+- `ClientVersion` = `go-vai-oidc/0.23.2`.
+
+### Measured live on styx Keycloak (realm `vaudience`, client `obol-admin`, 2026-09-28)
+
+| Request to the end-session endpoint | Status |
+|---|---|
+| (a) `post_logout_redirect_uri` only (the pre-v0.23.2 no-session URL) | **400** |
+| (b) `client_id=obol-admin` + the same `post_logout_redirect_uri` | **302** → the registered portal URL |
+| control: `client_id=nosuchclient` + the same redirect | 400 |
+| control: `client_id=obol-admin` + an unregistered redirect | 400 |
+
+(b) answered 302 rather than a confirmation page because the probe carried no SSO cookie, so there
+was no session to confirm ending. The controls show `client_id` narrows validation and loosens
+nothing.
+
 ## v0.23.1 — 2026-09-28
 
 **An empty membership set is admitted only when the landing will actually redirect.** A behaviour
