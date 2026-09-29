@@ -1,0 +1,4 @@
+# Reviewed 2026-09-29 (vaik8s#315): historical findings that are test fixtures, placeholders or non-secret identifiers.
+# Fingerprint-scoped: a NEW finding is not covered.
+662201d8cb9cd3bf01eb120ea9b8b95802762002:session_test.go:generic-api-key:30
+7648e9db3fffe66d129a1db945e1665f2ce7d5cb:email_domain_test.go:generic-api-key:187
