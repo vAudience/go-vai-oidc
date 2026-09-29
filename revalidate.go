@@ -145,6 +145,24 @@ func (a *Auth) maybeRevalidate(w http.ResponseWriter, r *http.Request, payload *
 	if fresh.RefreshToken != "" {
 		payload.RefreshToken = fresh.RefreshToken
 	}
+
+	// v0.25.0: re-ask the identity backend too, when configured. It runs only
+	// on a SUCCESSFUL grant — the IdP has just said this person is signed in,
+	// so the remaining question is what they may now hold.
+	if a.cfg.ReresolveOnRevalidate {
+		switch a.reresolve(r, payload, fresh) {
+		case reresolveEnded:
+			clearSessionCookie(w, a.cfg.CookieName, a.cfg.CookiePath, a.cfg.secureCookie())
+			return nil, ErrSessionRevoked
+		case reresolveSoft:
+			// Fail OPEN: keep the old resolved fields, persist the refreshed
+			// tokens (a rotated refresh token must not be lost), do NOT slide
+			// Exp, and back off like an IdP outage.
+			a.persistBackoff(w, payload, now)
+			return payload, nil
+		case reresolveApplied:
+		}
+	}
 	payload.LastValidated = now.Unix()
 	// The session becomes SLIDING here. Before v0.19.0 Exp was set once at login
 	// and never moved, so a session was an absolute 24h grant; now an active

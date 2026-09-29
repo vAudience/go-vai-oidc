@@ -1,5 +1,53 @@
 # Changelog
 
+## v0.25.0 — 2026-09-29
+
+**`ReresolveOnRevalidate`: an org or role change in the identity backend reaches a live session.**
+Additive and backward-compatible: one new config field, default false, no exported API changed —
+with the field unset every consumer is byte-for-byte v0.24.0.
+
+### ⛔ The defect
+
+`UserResolver` ran at the login callback only, and `maybeRevalidate` refreshed tokens without ever
+re-asking it. Since v0.19.0 made sessions sliding, a session's `OrgID`, `Memberships`, role and
+resolver-set claims were a snapshot taken at login and kept for the whole SSO session: a person
+demoted or removed in the identity backend (obol) kept the login-time answer.
+
+### What changed
+
+- **`Config.ReresolveOnRevalidate`** (default false). On every SUCCESSFUL revalidation grant the
+  identity is rebuilt — from the refreshed `id_token` when the provider returned one, verified by the
+  callback's own verifier and used only when it names the session's subject, else from the session's
+  stored identity stripped of `OrgID`/`Memberships` — and passed through the SAME admission function
+  the callback now calls (`RequireEmailVerified` → `RequireEmailDomain` → `UserResolver`).
+  - A `User` **replaces** the session's user-visible fields exactly as the callback stores them, and
+    the cookie is re-stamped. One deviation: an `OrgID` picked after login via `UpdateSession` is
+    kept while it is still one of the new `Memberships`.
+  - An org-less `User` (no `OrgID`, no `Memberships`) is applied as-is — what the callback stores —
+    **except** when its `Landing` redirects: at login that answer sends the browser to the funnel,
+    revalidation cannot navigate, so the session is ended and the next login lands there.
+  - `(nil, nil)` or a gate refusal — the callback refuses that login — **ends the session**
+    (cookies cleared, `ErrSessionRevoked` internally, the same answer as `invalid_grant`).
+  - A resolver **error fails OPEN**: old fields kept, WARN
+    `re-resolution on revalidation failed; … kept (fail-open)`, refreshed tokens persisted, `Exp` not
+    slid, next attempt backed off through `persistBackoff`.
+- `New()` refuses `ReresolveOnRevalidate` without `RevalidateInterval` or without `UserResolver`
+  (inert otherwise).
+- The callback's gate + resolver block moved into `admitIdentity` (`admission.go`); its log lines
+  are unchanged.
+- Tests (`reresolve_test.go`, fake IdP + fake resolver): changed answer lands (both input sources),
+  flag off never calls the resolver, resolver error keeps the fields and backs off, each empty
+  answer applied as the callback applies it (driven through the real callback beside it), picked
+  org kept/replaced, gate refusal ends the session, `RequireSession` serves the new org on the same
+  request, config refusals. Mutation-probed: removing the call, dropping the answer, ignoring the
+  outcome, failing closed on an error, and ignoring the flag each turn tests red.
+- `ClientVersion` = `go-vai-oidc/0.25.0`.
+
+### Adopting it
+
+`cfg.ReresolveOnRevalidate = true` beside an existing `RevalidateInterval` and `UserResolver`. It
+adds one resolver call per session per interval; size the interval against the identity backend.
+
 ## v0.24.0 — 2026-09-28
 
 **`RequireEmailVerified`, the ONE staff predicate, and path-prefix mounts documented** (go-vai-oidc#10,
