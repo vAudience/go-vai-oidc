@@ -149,6 +149,44 @@ the interval.
   until they expire — a bounded transition window of at most one `SessionTTL`. Killing them instead
   would mean a library upgrade signs out everyone currently logged in.
 
+### Re-resolution on revalidation (v0.25.0, opt-in)
+
+`UserResolver` runs at the login callback, and revalidation alone never re-asks it — so a
+session's `OrgID`, `Memberships`, role and resolver-set claims stay what they were at login for the
+whole SSO session, and a person demoted or removed in the identity backend keeps the login-time
+answer. `ReresolveOnRevalidate` closes that:
+
+```go
+cfg.RevalidateInterval = 5 * time.Minute
+cfg.UserResolver = obolresolver.New(…)
+cfg.ReresolveOnRevalidate = true
+```
+
+After every **successful** refresh grant the identity is rebuilt — from the refreshed ID token when
+the provider returned one (verified exactly as at login, and only if it names the same subject),
+otherwise from the identity stored in the session, stripped of everything a resolver sets — and
+passed through the same function the login callback uses: `RequireEmailVerified`, then
+`RequireEmailDomain`, then `UserResolver`. The answer is applied like this:
+
+| The answer | At login | On revalidation |
+| --- | --- | --- |
+| a `User` with an org | session stored with it | **replaces** `OrgID`, `Memberships`, `Claims`, `RealmRoles`, …; cookie re-stamped. An `OrgID` picked after login is kept while it is still a membership |
+| a `User` with no org, no redirecting `Landing` | org-less session stored | applied as-is (org-less) |
+| a `User` with no org and a redirecting `Landing` | browser sent to the funnel | **session ended** — revalidation cannot navigate; the next login lands in the funnel |
+| `(nil, nil)`, or a login gate refuses | login refused | **session ended** (cookies cleared, request treated as signed out) |
+| an **error** | login refused | ⛔ **fail open**: old fields kept, WARN logged, refreshed tokens persisted, `Exp` not slid, next attempt backed off as for a provider outage |
+
+- ⛔ **An error is the backend failing to answer, not answering "no".** Ending sessions on it would
+  turn one identity-backend blip into a fleet-wide logout — the same reasoning that makes only
+  `invalid_grant` sign anyone out. Because `Exp` does not slide on this arm, a resolver outage longer
+  than `SessionTTL` still ends the session on its own expiry.
+- ⚠️ **The login gates re-run too**, on the same input, so a gate that would refuse the login ends
+  the session. Pre-v0.24.0 cookies have `email_verified` false; with `RequireEmailVerified` on, the
+  gate reads the refreshed ID token when there is one, so this bites only on providers that return
+  no `id_token` from a refresh.
+- ⚠️ **It puts one resolver call per session per interval on an ordinary request.** Size the interval
+  against the identity backend as well as the provider.
+
 ## Identity sync (v0.20.0) — the half revalidation cannot do
 
 `RevalidateInterval` above answers **liveness**: *is the session this cookie was minted from still
@@ -478,6 +516,10 @@ cfg.UserResolver = func(ctx context.Context, user *vaioidc.User) (*vaioidc.User,
 For multi-org users, populate `user.Memberships` and leave `OrgID` empty; render a picker post-login
 and commit the choice with `auth.UpdateSession(w, r, func(u *User){ u.OrgID = chosen })`.
 
+By default the resolver runs **only here**, so its answer is frozen for the life of the session; set
+`ReresolveOnRevalidate` to re-ask it on every successful revalidation (see
+"Re-resolution on revalidation" above).
+
 **vAudience note:** `obolresolver/` is an optional reference `UserResolver` adapter that resolves
 identities against the Obol billing service. It is a vendor-specific example — generic consumers do
 not import it, and it adds no dependency to the root package. Use it as a template for your own.
@@ -547,6 +589,13 @@ vaioidc.Config{
                                        // than SessionTTL; New() refuses both, because an interval
                                        // that silently does nothing is indistinguishable from one
                                        // that works. See "Sign-out propagation" below.
+    ReresolveOnRevalidate bool         // re-run the login gates and UserResolver on every
+                                       // successful revalidation, so an org/role change in the
+                                       // identity backend reaches a live session (v0.25.0;
+                                       // default false = resolver at login only). A resolver
+                                       // ERROR fails open; an answer that would refuse the login
+                                       // ends the session. ⛔ REQUIRES RevalidateInterval and
+                                       // UserResolver. See "Re-resolution on revalidation" below.
     SessionSyncEnabled   bool          // enable GET <mount>/session/sync — a browser-side check of
                                        // WHO is signed in, which RevalidateInterval structurally
                                        // cannot answer (default false = pre-v0.20.0). Needs no realm

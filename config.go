@@ -162,6 +162,57 @@ type Config struct {
 	// reachable on ordinary page loads rather than only on API-key minting.
 	RevalidateInterval time.Duration
 
+	// ReresolveOnRevalidate re-runs the login gates and the UserResolver each
+	// time a revalidation grant SUCCEEDS (v0.25.0). Default false, which is
+	// v0.24.0 behaviour exactly: the resolver runs at the login callback only.
+	//
+	// ⭐ WITHOUT IT, WHAT THE RESOLVER SAID AT LOGIN IS FROZEN FOR THE WHOLE SSO
+	// SESSION. RevalidateInterval keeps the session alive only while the IdP
+	// session lives, and a sliding session can outlive any number of changes in
+	// the identity backend: a person demoted or removed from an organization
+	// keeps the login-time OrgID, Memberships and role until they log in again.
+	//
+	// When true, after a successful refresh grant the identity is rebuilt from
+	// the refreshed ID token when the IdP returned one (verified exactly as the
+	// callback verifies it), else from the identity stored in the session, and
+	// passed through the SAME function the callback uses (RequireEmailVerified,
+	// RequireEmailDomain, then UserResolver). The answer is applied as follows:
+	//
+	//   - A User → it REPLACES the session's user-visible fields (OrgID,
+	//     Memberships, Claims, RealmRoles, …) exactly as the callback stores a
+	//     login's answer, and the cookie is re-stamped as revalidation already
+	//     does. ONE exception: an active OrgID chosen after login (via
+	//     UpdateSession) is kept while it is still among the new Memberships,
+	//     so a multi-org picker's choice is not reset every interval. Any
+	//     other field a consumer wrote with UpdateSession is replaced.
+	//   - A User with no OrgID and no Memberships → applied as-is (an org-less
+	//     session), which is what the callback stores for the same answer. ⛔
+	//     EXCEPT when its Landing redirects (onboarding, closed_beta, …): at
+	//     login that answer sends the browser to the backend's funnel, and a
+	//     revalidation cannot navigate, so the session is ENDED instead and the
+	//     next login lands the person in the funnel. Keeping an org-less session
+	//     would serve requests the login never would.
+	//   - (nil, nil), or a login gate refusing → the callback would refuse this
+	//     login, so the session is ENDED: cookies cleared, the request treated
+	//     as signed out (the same answer as an invalid_grant).
+	//   - An ERROR → FAIL OPEN, matching revalidation's own posture: the previous
+	//     OrgID/Memberships/claims are kept, a WARN is logged, the refreshed
+	//     tokens are persisted, Exp does NOT slide, and the next attempt is
+	//     backed off exactly as an IdP outage is. A session therefore never
+	//     gains life while its resolved fields cannot be re-derived: a resolver
+	//     outage longer than SessionTTL ends it on its own Exp.
+	//
+	// The landing decision itself is not persisted and is never acted on here.
+	//
+	// ⚠️ IT PUTS A RESOLVER CALL ON THE REVALIDATION PATH, i.e. at most once per
+	// RevalidateInterval per session, on an ordinary request. Size the interval
+	// against the identity backend, not only against the IdP.
+	//
+	// ⛔ REQUIRES RevalidateInterval AND UserResolver. New() refuses either
+	// missing, because without the first it never runs and without the second
+	// there is nothing to re-resolve — both would be inert and look configured.
+	ReresolveOnRevalidate bool
+
 	// SessionSyncEnabled turns on the silent identity-reconciliation endpoint at
 	// <mount>/session/sync (v0.20.0). Default false, which is pre-v0.20.0
 	// behaviour exactly: the route exists and answers `disabled`, and no browser
@@ -285,6 +336,12 @@ type Config struct {
 // It receives the user extracted from the token and must return the final user
 // (with OrgID set, etc.) or an error to reject the login.
 // If nil, no resolution is performed and the user is stored as-is.
+//
+// With Config.ReresolveOnRevalidate (v0.25.0) it is also called after every
+// successful revalidation grant, with an input of the same shape (ID-token
+// identity, no OrgID or Memberships); see that field for how each answer is
+// applied. A resolver that must tell the two calls apart cannot, by design:
+// both ask the same question.
 type UserResolver func(ctx context.Context, user *User) (*User, error)
 
 // secureCookie returns true if cookies should have the Secure flag.
@@ -422,6 +479,21 @@ func (c *Config) validate() ([]byte, error) {
 			return nil, fmt.Errorf(
 				"RevalidateInterval (%s) must be shorter than SessionTTL (%s): a session that expires before its first revalidation is never revalidated at all: %w",
 				c.RevalidateInterval, c.SessionTTL, ErrInvalidConfig)
+		}
+	}
+
+	// Validate re-resolution (v0.25.0): refuse an inert switch, for the same
+	// reason as the RevalidateInterval refusals above.
+	if c.ReresolveOnRevalidate {
+		if c.RevalidateInterval <= 0 {
+			return nil, fmt.Errorf(
+				"ReresolveOnRevalidate is set but RevalidateInterval is zero: re-resolution runs on a successful revalidation, so it would never run: %w",
+				ErrInvalidConfig)
+		}
+		if c.UserResolver == nil {
+			return nil, fmt.Errorf(
+				"ReresolveOnRevalidate is set but UserResolver is nil: there is nothing to re-resolve: %w",
+				ErrInvalidConfig)
 		}
 	}
 

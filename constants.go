@@ -262,6 +262,30 @@ const (
 	logMsgRevalidateSkip = "go-vai-oidc: session carries no refresh token; revalidation skipped (fail-open)"
 )
 
+// Login admission + re-resolution on revalidation (v0.25.0). The two
+// logMsgResolver* strings are the callback's pre-v0.25.0 inline literals,
+// unchanged, so log-based alerting on them keeps matching.
+const (
+	logMsgResolverRejected  = "OIDC callback: UserResolver rejected login"
+	logMsgResolverNoUser    = "OIDC callback: UserResolver returned nil user"
+	logReasonResolverFailed = "resolver_error"
+	logReasonResolverNoUser = "resolver_no_user"
+	// logReasonLandingRedirect names the re-resolution arm that ends a session
+	// because the backend now sends this person to its funnel with no org.
+	logReasonLandingRedirect = "landing_redirect_without_org"
+
+	logKeyIdentitySource = "identity_source"
+	// identitySource* say which input the re-resolution ran on: the ID token the
+	// refresh returned (verified), or the identity stored in the session.
+	identitySourceRefreshedIDToken = "refreshed_id_token"
+	identitySourceSession          = "session"
+
+	logMsgReresolveSoft    = "go-vai-oidc: re-resolution on revalidation failed; previous org and memberships kept (fail-open)"
+	logMsgReresolveEnded   = "go-vai-oidc: re-resolution on revalidation no longer admits this person — signing out"
+	logMsgReresolved       = "go-vai-oidc: session re-resolved on revalidation"
+	logMsgReresolveIDToken = "go-vai-oidc: refreshed id_token failed verification or names another subject; re-resolving from the session's stored identity"
+)
+
 // Log component.
 const logComponent = "go-vai-oidc"
 

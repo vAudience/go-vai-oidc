@@ -589,74 +589,16 @@ func (a *Auth) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 	// Extract user claims.
 	user := a.provider.extractUser(idToken, a.logger, a.cfg.ExtraClaims)
 
-	// Verified-email gate (v0.24.0). Runs first: an unverified address makes
-	// the domain gate's verdict meaningless, and the rejection must not depend
-	// on which domain the (unproven) address claims.
-	if a.cfg.RequireEmailVerified && (user == nil || !user.EmailVerified) {
-		var sub string
-		if user != nil {
-			sub = user.Sub
-		}
-		a.logger.Warn(logMsgEmailUnverifiedRejected,
-			slog.String(logKeyComponent, logComponent),
-			slog.String(logKeyReason, logReasonEmailUnverified),
-			slog.String(logKeySub, sub),
-			slog.String(logKeyClientIP, clientIP(r)),
-		)
+	// The login gates and the UserResolver (v0.25.0: one function, shared with
+	// revalidation's re-resolution, so the two cannot drift apart). The log
+	// lines stay here, byte-identical to v0.24.0, because they name the login.
+	admitted, admitErr := a.admitIdentity(r.Context(), user)
+	if admitErr != nil {
+		a.logLoginRefusal(r, user, admitErr)
 		http.Redirect(w, r, a.cfg.LogoutRedirect, http.StatusFound)
 		return
 	}
-
-	// Email-domain gate. Runs BEFORE UserResolver so a
-	// custom resolver does not need to know about the rule and so the
-	// rejection log line never carries resolver-side state. Empty
-	// RequireEmailDomain skips the check (existing behaviour).
-	if domainErr := enforceEmailDomain(user, a.cfg.RequireEmailDomain); domainErr != nil {
-		// extractUser cannot return nil today, but enforceEmailDomain
-		// is documented nil-tolerant and the gate sits before any
-		// UserResolver call — guard the log site so a future
-		// extractor change cannot crash the rejection log path.
-		var sub, emailDomain string
-		if user != nil {
-			sub = user.Sub
-			emailDomain = emailDomainOf(user.Email)
-		}
-		a.logger.Warn(logMsgEmailDomainRejected,
-			slog.String(logKeyComponent, logComponent),
-			slog.String(logKeyReason, domainReason(domainErr)),
-			slog.String(logKeySub, sub),
-			slog.String(logKeyEmailDomain, emailDomain),
-			slog.String(logKeyRequiredDomain, a.cfg.RequireEmailDomain),
-			slog.String(logKeyClientIP, clientIP(r)),
-		)
-		http.Redirect(w, r, a.cfg.LogoutRedirect, http.StatusFound)
-		return
-	}
-
-	// Call UserResolver if configured.
-	if a.cfg.UserResolver != nil {
-		resolved, resolveErr := a.cfg.UserResolver(r.Context(), user)
-		if resolveErr != nil {
-			a.logger.Warn("OIDC callback: UserResolver rejected login",
-				slog.String(logKeyComponent, logComponent),
-				slog.String(logKeyError, resolveErr.Error()),
-				slog.String(logKeySub, user.Sub),
-				slog.String(logKeyClientIP, clientIP(r)),
-			)
-			http.Redirect(w, r, a.cfg.LogoutRedirect, http.StatusFound)
-			return
-		}
-		if resolved == nil {
-			a.logger.Warn("OIDC callback: UserResolver returned nil user",
-				slog.String(logKeyComponent, logComponent),
-				slog.String(logKeySub, user.Sub),
-				slog.String(logKeyClientIP, clientIP(r)),
-			)
-			http.Redirect(w, r, a.cfg.LogoutRedirect, http.StatusFound)
-			return
-		}
-		user = resolved
-	}
+	user = admitted
 
 	// Create and encrypt session. Build the user-visible fields via fromUser so
 	// EVERY field that round-trips through a User (incl. Memberships, v0.14.0)
