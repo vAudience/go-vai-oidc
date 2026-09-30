@@ -51,7 +51,8 @@ var (
 //   - errResolverNoUser — the resolver returned (nil, nil).
 //
 // With no UserResolver configured the identity is returned as-is.
-func (a *Auth) admitIdentity(ctx context.Context, user *User) (*User, error) {
+func (a *Auth) admitIdentity(ctx context.Context, kind Admission, user *User) (*User, error) {
+	ctx = context.WithValue(ctx, admissionKey{}, kind)
 	if a.cfg.RequireEmailVerified && (user == nil || !user.EmailVerified) {
 		return nil, ErrEmailNotVerified
 	}
@@ -69,6 +70,37 @@ func (a *Auth) admitIdentity(ctx context.Context, user *User) (*User, error) {
 		return nil, errResolverNoUser
 	}
 	return resolved, nil
+}
+
+// Admission names why the UserResolver is being asked (v0.26.0). A resolver
+// with side effects that belong to a SIGN-IN — an audit row, a "last login"
+// stamp, invite acceptance — reads it with AdmissionFromContext and performs
+// them on AdmissionLogin only. Without it, ReresolveOnRevalidate turned every
+// revalidation interval into a second, fabricated sign-in.
+type Admission string
+
+const (
+	// AdmissionLogin: the login callback, after a fresh authorization-code
+	// exchange. A person signed in.
+	AdmissionLogin Admission = "login"
+	// AdmissionRevalidation: Config.ReresolveOnRevalidate re-asking the
+	// resolver for a LIVE session after a successful refresh grant. Nobody
+	// signed in; the question is only whether the org/role answer changed.
+	AdmissionRevalidation Admission = "revalidation"
+)
+
+type admissionKey struct{}
+
+// AdmissionFromContext reports why the UserResolver was called. It answers ""
+// for a context the library did not build — a resolver invoked directly by a
+// consumer's own code or test — which a resolver must treat as neither kind
+// rather than guess.
+func AdmissionFromContext(ctx context.Context) Admission {
+	if ctx == nil {
+		return ""
+	}
+	kind, _ := ctx.Value(admissionKey{}).(Admission)
+	return kind
 }
 
 // admissionReason names a refusal from admitIdentity for a log line.

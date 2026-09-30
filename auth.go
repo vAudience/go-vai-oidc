@@ -592,7 +592,7 @@ func (a *Auth) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 	// The login gates and the UserResolver (v0.25.0: one function, shared with
 	// revalidation's re-resolution, so the two cannot drift apart). The log
 	// lines stay here, byte-identical to v0.24.0, because they name the login.
-	admitted, admitErr := a.admitIdentity(r.Context(), user)
+	admitted, admitErr := a.admitIdentity(r.Context(), AdmissionLogin, user)
 	if admitErr != nil {
 		a.logLoginRefusal(r, user, admitErr)
 		http.Redirect(w, r, a.cfg.LogoutRedirect, http.StatusFound)

@@ -64,7 +64,7 @@ const (
 func (a *Auth) reresolve(r *http.Request, payload *sessionPayload, fresh *oauth2.Token) reresolveOutcome {
 	identity, source := a.revalidationIdentity(r.Context(), payload, fresh)
 
-	resolved, err := a.admitIdentity(r.Context(), identity)
+	resolved, err := a.admitIdentity(r.Context(), AdmissionRevalidation, identity)
 	if err != nil {
 		reason := admissionReason(err)
 		if reason == logReasonResolverFailed {
