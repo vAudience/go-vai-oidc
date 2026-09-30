@@ -1,6 +1,9 @@
 package vaioidc
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // User holds the authenticated user's identity extracted from the OIDC ID token.
 type User struct {
@@ -69,6 +72,22 @@ type User struct {
 	// entry needed — this is a first-class field, like OrgID/Memberships). Nil
 	// if the claim was absent or the ID token carried no realm roles at all.
 	RealmRoles []string `json:"realm_roles,omitempty"`
+
+	// AuthTime is when the person last AUTHENTICATED at the identity provider —
+	// the verified ID token's `auth_time` claim (v0.28.0). Zero means unknown: a
+	// session minted before v0.28.0, an IdP that does not issue the claim, or an
+	// IssueSession caller that supplied none.
+	//
+	// ⛔ IT IS NOT WHEN THE SESSION WAS LAST REFRESHED. Revalidation (a refresh
+	// token grant) never advances it, so a sliding session that has been alive
+	// for a day reports the authentication that started it. Use
+	// RecentlyAuthenticated to gate a write on a recent sign-in, and
+	// Auth.StepUpLoginURL to ask for one.
+	//
+	// ⚠️ It is owned by the library, not by a UserResolver: the callback records
+	// the ID token's value whatever the resolver returns, and UpdateSession does
+	// not write it.
+	AuthTime time.Time `json:"auth_time,omitzero"`
 
 	// Landing is the identity backend's DECISION about where this person should
 	// be sent after login (v0.18.0, obolresolver populates it from obol's

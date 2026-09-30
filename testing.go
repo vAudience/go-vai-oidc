@@ -72,6 +72,7 @@ func (ta *TestAuth) TestSessionCookie(t *testing.T, user *User) *http.Cookie {
 
 	payload := &sessionPayload{
 		Exp: time.Now().UTC().Add(ta.cfg.SessionTTL).Unix(),
+		Aut: unixOrZero(user.AuthTime),
 	}
 	payload.fromUser(user)
 

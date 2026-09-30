@@ -1,5 +1,49 @@
 # Changelog
 
+## v0.28.0 — 2026-09-30
+
+**Step-up: `max_age` at `/auth/login`, `User.AuthTime`, and `RecentlyAuthenticated`.** Additive: a
+consumer that does nothing is byte-identical except that sessions now also carry `auth_time`
+(an omitted-when-zero cookie field) and `/auth/login` refuses a *malformed* `max_age` with 400 — a
+parameter it previously dropped.
+
+### ⛔ The gap
+
+A sliding session (v0.19.0) proves the person is still signed in, never *when they last
+authenticated*. `/auth/login` forwarded only `kc_idp_hint` and `prompt`, `User` had no `auth_time`,
+and nothing compared the two — so a consumer could not demand a fresh sign-in before a dangerous write
+(obol HARBOUR -15c: a system-admin writing a platform credential).
+
+### What changed
+
+- **`/auth/login?max_age=N`** — validated (plain non-negative integer seconds, ≤ 10 digits,
+  ≤ 2147483647; else **400**, never dropped) and forwarded to the authorization request. A
+  `vai_oidc_max_age` marker cookie carries `max_age` and the login's start to the callback; an
+  ordinary login clears a stale one.
+- **The callback enforces OIDC Core §3.1.3.7 rule 13** when `max_age` was requested: `auth_time`
+  REQUIRED, and no earlier than login start − `max_age` − `AuthTimeSkew` (30 s). Refusal = the
+  existing callback failure (redirect to `LogoutRedirect`, no session), before the gates and the
+  resolver.
+- **`User.AuthTime time.Time`** from the verified ID token's `auth_time`; persisted as `aut`. It is
+  written by the callback (captured before the resolver, so a resolver building a fresh `User` cannot
+  drop it), `IssueSession` and `TestSessionCookie` — never by `fromUser`, so `UpdateSession` and
+  re-resolution cannot move it (ledgered in `TestSessionCarriesEveryUserFieldOrLedgersWhyNot`).
+- ⛔ **A revalidation refresh never advances it**: a refreshed ID token that verifies for the
+  session's subject may fill an unknown or move it EARLIER; a later value is ignored, and no path
+  sets it to now (`mergeRefreshedAuthTime`).
+- **`RecentlyAuthenticated(u *User, window time.Duration, now time.Time) bool`** — false for nil, a
+  zero `AuthTime`, or a non-positive window; a future `AuthTime` is accepted only within
+  `AuthTimeSkew`.
+- **`(*Auth).StepUpLoginURL(returnTo string) (string, error)`** — `<LoginPath>?max_age=0&redirect=…`;
+  `returnTo` must pass the same same-origin rule as `redirect` (`ErrInvalidReturnPath` otherwise).
+- New exported: `AuthTimeSkew`, `ErrInvalidReturnPath`. `ClientVersion` = `go-vai-oidc/0.28.0`.
+- ⚠️ **Session compatibility:** a pre-v0.28.0 cookie decodes with `AuthTime` zero (unknown) — a
+  step-up then asks for a login once. A v0.28.0 cookie read by an older binary ignores `aut`.
+- Tests: `stepup_test.go`. Mutation-probed: accepting a missing `auth_time` reddens
+  `TestAuthTime_CallbackVerifiesRequestedMaxAge`; adopting a later refreshed value, or stamping now on
+  refresh, reddens `TestAuthTime_RefreshDoesNotAdvance`; skipping the callback check or dropping the
+  callback's `Aut` write reddens the callback test.
+
 ## v0.27.0 — 2026-09-30
 
 **`ContextWithAdmission`: a consumer can test its resolver's revalidation arm.** Additive.

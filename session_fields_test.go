@@ -17,6 +17,12 @@ import (
 // closing a gap forces its line out of here rather than leaving a stale
 // exemption for the next omission to hide behind.
 var sessionOmittedUserFields = map[string]string{
+	"AuthTime": "PERSISTED, but deliberately NOT by fromUser (v0.28.0): it is written as " +
+		"sessionPayload.Aut only where an authentication is evidenced — the callback (from the " +
+		"verified ID token, before the resolver runs), IssueSession, TestSessionCookie and " +
+		"revalidation's never-advance merge — so a UserResolver that builds a fresh User, or an " +
+		"UpdateSession mutation, can neither drop nor move it. toUser reads it back; " +
+		"TestAuthTime_* pin every writer.",
 	"Landing": "A one-shot verdict about a LOGIN, not an attribute of the person. " +
 		"Persisting it would make it stale in the worst direction: somebody who lands " +
 		"on onboarding and completes it would carry `onboarding` for the rest of their " +

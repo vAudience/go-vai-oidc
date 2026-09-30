@@ -364,6 +364,7 @@ type User struct {
     Claims      map[string]string // extra claims requested via Config.ExtraClaims
     RealmRoles  []string          // Keycloak realm_access.roles; nil for non-Keycloak providers
     Landing     *Landing          // the identity backend's post-login routing DECISION (v0.18.0)
+    AuthTime    time.Time         // id_token auth_time (v0.28.0); zero = unknown; a refresh never advances it
 }
 ```
 
@@ -415,6 +416,56 @@ session copy goes stale the moment the person acts on it.
 
 `RealmRoles` is a Keycloak convenience: for any other provider the `realm_access` claim is simply
 absent and the slice is nil (not an error). Check membership with `user.HasRealmRole("some-role")`.
+
+## Step-up (recent authentication) — v0.28.0
+
+A live session proves the person is *still* signed in; it does not prove they *recently* proved who
+they are. A write that must not be performed from a browser left unlocked (a platform credential, a
+payout target) asks for a fresh authentication:
+
+```go
+const stepUpWindow = 5 * time.Minute
+
+func (h *Handler) putPlatformCredential(w http.ResponseWriter, r *http.Request) {
+    u := vaioidc.UserFromContext(r.Context())
+    if !vaioidc.RecentlyAuthenticated(u, stepUpWindow, time.Now()) {
+        stepUp, err := h.auth.StepUpLoginURL("/console/credentials") // same-origin path only
+        if err != nil { /* ErrInvalidReturnPath: a bug in your return path */ }
+        writeJSON(w, http.StatusUnauthorized, map[string]any{
+            "error": "step_up_required", "step_up_url": stepUp,
+        })
+        return
+    }
+    // ... perform the write
+}
+```
+
+The SPA answers that 401 with a **full-page navigation** — `window.location.assign(body.step_up_url)`,
+never an XHR/fetch (it is a redirect chain through the provider's login page) — and the callback
+returns the browser to the path it named, where the person repeats the action.
+
+- **`/auth/login?max_age=N`** forwards `max_age` to the authorization request (OIDC Core §3.1.2.1);
+  `StepUpLoginURL` builds `<LoginPath>?max_age=0&redirect=<path>`, and `max_age=0` forces
+  re-authentication. `N` must be a plain non-negative integer of seconds (≤ 2147483647, at most 10
+  digits); anything else is **refused with 400**, never dropped — dropping it would silently turn a
+  step-up into an ordinary login.
+- **The callback verifies `auth_time`** when `max_age` was requested (§3.1.3.7): the claim is then
+  REQUIRED and must not predate the login's start by more than `max_age` + `AuthTimeSkew` (30 s).
+  A failure is refused like any other callback failure (redirect to `LogoutRedirect`, no session,
+  resolver not called).
+- **`User.AuthTime`** is the verified ID token's `auth_time`, persisted in the session. ⛔ **A
+  revalidation refresh never advances it** — a refresh is not an authentication; a refreshed ID
+  token's value is adopted only to fill an unknown or to move it *earlier*. `UpdateSession` and a
+  `UserResolver` cannot move it either.
+- ⚠️ **A session minted before v0.28.0 carries a zero `AuthTime`**, so `RecentlyAuthenticated` is
+  false for it until the person signs in again — the fail-closed direction; the first step-up after an
+  upgrade simply asks for a login.
+- ⚠️ **The door's check is the guard; the callback's is defence in depth.** `AuthTime` comes only from
+  a signature-verified ID token, so nothing a browser does to the `max_age` marker cookie can make an
+  old authentication look recent.
+- Keycloak needs no realm setting: it honours `max_age` and issues `auth_time` whenever it is
+  requested. `IssueSession` (ROPC) records whatever `AuthTime` the caller's `User` carries —
+  `VerifyIDToken` fills it from the token.
 
 ## Staff surfaces — `RequireStaff` and the ONE staff predicate (v0.24.0)
 
