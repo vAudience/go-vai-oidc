@@ -146,6 +146,10 @@ func (a *Auth) maybeRevalidate(w http.ResponseWriter, r *http.Request, payload *
 		payload.RefreshToken = fresh.RefreshToken
 	}
 
+	// v0.28.0: a refresh is not an authentication. auth_time from a verified
+	// refreshed ID token may FILL an unknown or move EARLIER, never later.
+	payload.Aut = mergeRefreshedAuthTime(payload.Aut, a.refreshedAuthTime(r, payload, fresh))
+
 	// v0.25.0: re-ask the identity backend too, when configured. It runs only
 	// on a SUCCESSFUL grant — the IdP has just said this person is signed in,
 	// so the remaining question is what they may now hold.
@@ -187,6 +191,21 @@ func (a *Auth) maybeRevalidate(w http.ResponseWriter, r *http.Request, payload *
 		slog.Float64(logKeyRevalidateAge, age.Seconds()),
 	)
 	return payload, nil
+}
+
+// refreshedAuthTime returns the auth_time (unix seconds) of the refreshed ID
+// token when the grant returned one that verifies for this session's subject,
+// else 0. A token that does not verify is not evidence of anything.
+func (a *Auth) refreshedAuthTime(r *http.Request, payload *sessionPayload, fresh *oauth2.Token) int64 {
+	raw, ok := fresh.Extra(extraIDToken).(string)
+	if !ok || raw == "" || a.provider.verifier == nil {
+		return 0
+	}
+	user, err := a.VerifyIDToken(r.Context(), raw)
+	if err != nil || user.Sub != payload.Sub {
+		return 0
+	}
+	return unixOrZero(user.AuthTime)
 }
 
 // validationAnchor returns the unix time the floor is measured from.

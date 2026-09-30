@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -244,7 +245,8 @@ func (a *Auth) SkipPathsWithPrefix(prefix string) []string {
 }
 
 // UpdateSession reads the current session, applies the mutation function to the User,
-// and writes the updated session back as a new cookie. IDToken and Exp are preserved.
+// and writes the updated session back as a new cookie. IDToken and Exp are preserved,
+// and so is AuthTime (v0.28.0): a mutation of User.AuthTime is not persisted.
 // Use this for org selection (setting OrgID after login) or updating Claims.
 func (a *Auth) UpdateSession(w http.ResponseWriter, r *http.Request, mutate func(*User)) error {
 	if mutate == nil {
@@ -352,6 +354,9 @@ func (a *Auth) IssueSession(w http.ResponseWriter, r *http.Request, user *User, 
 		// v0.22.0: marked so session sync does not read this browser's
 		// (necessarily absent) provider session as a sign-out. See Src.
 		Src: sessionSourceGrant,
+		// v0.28.0: the caller's alternate grant is the authentication, and the
+		// caller vouches for its time (VerifyIDToken fills it from the token).
+		Aut: unixOrZero(user.AuthTime),
 	}
 	payload.fromUser(user)
 	return setSessionCookie(w, payload, a.sessionKey, a.cfg.CookieName, a.cfg.CookiePath, a.cfg.secureCookie(), a.logger)
@@ -428,6 +433,18 @@ func (a *Auth) AccessToken(w http.ResponseWriter, r *http.Request) (string, erro
 
 // handleLogin initiates the OIDC Authorization Code Flow with PKCE.
 func (a *Auth) handleLogin(w http.ResponseWriter, r *http.Request) {
+	// v0.28.0: a malformed max_age is REFUSED, never dropped — dropping it would
+	// silently turn a step-up into an ordinary login.
+	maxAge, maxAgeRequested, maxAgeOK := parseMaxAge(r.URL.Query().Get(queryParamMaxAge))
+	if !maxAgeOK {
+		a.logger.Warn(logMsgMaxAgeInvalid,
+			slog.String(logKeyComponent, logComponent),
+			slog.String(logKeyClientIP, clientIP(r)),
+		)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": errBodyInvalidMaxAge})
+		return
+	}
+
 	state, err := generateState()
 	if err != nil {
 		a.logger.Error("failed to generate OIDC state",
@@ -462,6 +479,15 @@ func (a *Auth) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	setOIDCCookie(w, cookieOIDCState, stateValue, a.cfg.CookiePath, a.cfg.secureCookie())
 	setOIDCCookie(w, cookiePKCEVerifier, verifier, a.cfg.CookiePath, a.cfg.secureCookie())
+	if maxAgeRequested {
+		// The callback must know max_age was asked for (auth_time becomes
+		// REQUIRED) and when the login started (the bound is measured from it).
+		setOIDCCookie(w, cookieOIDCMaxAge, maxAgeCookieValue(maxAge, time.Now().UTC()), a.cfg.CookiePath, a.cfg.secureCookie())
+	} else {
+		// A stale marker from an abandoned step-up must not make this ordinary
+		// login demand auth_time.
+		clearOIDCCookie(w, cookieOIDCMaxAge, a.cfg.CookiePath, a.cfg.secureCookie())
+	}
 
 	// v0.5.0: forward selected query params from /auth/login to
 	// Keycloak's authorize endpoint. `kc_idp_hint` skips Keycloak's
@@ -471,6 +497,9 @@ func (a *Auth) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// the IdP whitelist below is forwarded so a malicious caller
 	// cannot inject arbitrary OAuth params.
 	extra := authCodeExtras(r)
+	if maxAgeRequested {
+		extra[queryParamMaxAge] = strconv.FormatInt(maxAge, 10)
+	}
 	authURL := a.provider.authCodeURL(state, challenge, extra)
 
 	a.logger.Debug("OIDC login redirect",
@@ -485,7 +514,9 @@ func (a *Auth) handleLogin(w http.ResponseWriter, r *http.Request) {
 // to forward to the authorize endpoint. v0.5.0 ships kc_idp_hint
 // + prompt; future cycles may extend (e.g. login_hint) — each
 // addition is a deliberate decision so unknown params can't slip
-// through silently.
+// through silently. v0.28.0's max_age is NOT here: it is validated
+// and forwarded by handleLogin, because it also arms the callback's
+// auth_time check.
 func authCodeExtras(r *http.Request) map[string]string {
 	out := map[string]string{}
 	q := r.URL.Query()
@@ -537,6 +568,9 @@ func (a *Auth) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 
 	clearOIDCCookie(w, cookieOIDCState, a.cfg.CookiePath, a.cfg.secureCookie())
 	clearOIDCCookie(w, cookiePKCEVerifier, a.cfg.CookiePath, a.cfg.secureCookie())
+	// v0.28.0: the max_age marker is read below (the request still carries it)
+	// and cleared here with the others, so no later login inherits it.
+	clearOIDCCookie(w, cookieOIDCMaxAge, a.cfg.CookiePath, a.cfg.secureCookie())
 
 	// Parse state: "state" or "state|redirect".
 	storedState, storedRedirect := parseStateCookie(stateCookie.Value)
@@ -589,6 +623,15 @@ func (a *Auth) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 	// Extract user claims.
 	user := a.provider.extractUser(idToken, a.logger, a.cfg.ExtraClaims)
 
+	// v0.28.0: a login that requested max_age REQUIRES auth_time, and a recent
+	// enough one (OIDC Core §3.1.3.7 rule 13). Before the gates and the
+	// resolver, so a refused step-up has no resolver side effects.
+	authTime := user.AuthTime
+	if !a.verifyRequestedMaxAge(r, authTime) {
+		http.Redirect(w, r, a.cfg.LogoutRedirect, http.StatusFound)
+		return
+	}
+
 	// The login gates and the UserResolver (v0.25.0: one function, shared with
 	// revalidation's re-resolution, so the two cannot drift apart). The log
 	// lines stay here, byte-identical to v0.24.0, because they name the login.
@@ -615,6 +658,9 @@ func (a *Auth) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 		IDToken:       rawIDToken,
 		Exp:           issuedAt.Add(a.cfg.SessionTTL).Unix(),
 		LastValidated: issuedAt.Unix(),
+		// v0.28.0: from the VERIFIED ID token, captured before the resolver ran,
+		// so a resolver that builds a fresh User cannot drop or move it.
+		Aut: unixOrZero(authTime),
 	}
 	payload.fromUser(user)
 

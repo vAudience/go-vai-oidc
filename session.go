@@ -70,6 +70,17 @@ type sessionPayload struct {
 	// verdict about the session at all. Without this field sync read it as
 	// `signed_out` and cleared every inline-login session on its first tick.
 	Src string `json:"src,omitempty"`
+
+	// Aut (v0.28.0) is the ID token's `auth_time` in unix seconds — when the
+	// person last authenticated at the IdP. Zero, and absent on the wire, means
+	// unknown, which is what every session minted before v0.28.0 decodes as.
+	//
+	// ⛔ fromUser DOES NOT WRITE IT. It is written only where an authentication
+	// is evidenced — the login callback (from the verified ID token),
+	// IssueSession (from the caller's User), and revalidation under
+	// mergeRefreshedAuthTime's never-advance rule — so neither a UserResolver's
+	// answer nor an UpdateSession mutation can move it.
+	Aut int64 `json:"aut,omitempty"`
 }
 
 // isGrantMinted reports whether the session was minted by IssueSession from an
@@ -90,6 +101,7 @@ func (p *sessionPayload) toUser() *User {
 		Claims:        p.Claims,
 		RealmRoles:    p.Rls,
 		SessionID:     p.Sid,
+		AuthTime:      timeOrZero(p.Aut),
 	}
 }
 

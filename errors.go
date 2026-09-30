@@ -107,3 +107,13 @@ var (
 	// domain, or no roles. A policy that cannot be evaluated refuses everyone.
 	ErrStaffPolicyInvalid = errors.New("vai-oidc: invalid staff policy")
 )
+
+// Step-up errors (v0.28.0).
+var (
+	// ErrInvalidReturnPath is returned by Auth.StepUpLoginURL for a return path
+	// that is not a same-origin relative path (the rule /auth/login applies to
+	// its `redirect` parameter). It is an error rather than a silent drop so a
+	// consumer bug surfaces instead of landing the person on the post-login
+	// default.
+	ErrInvalidReturnPath = errors.New("vai-oidc: step-up return path must be a same-origin relative path")
+)
