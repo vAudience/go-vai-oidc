@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.26.0 — 2026-09-30
+
+**`AdmissionFromContext`: a UserResolver can tell a sign-in from a revalidation.** Additive: one
+exported type, two constants and one function; no behaviour changes for a resolver that ignores it.
+
+### ⛔ The defect
+
+v0.25.0's `ReresolveOnRevalidate` re-runs the consumer's `UserResolver` every `RevalidateInterval`,
+through the same admission path as the login callback — and gave the resolver no way to know which
+one was asking. A resolver with SIGN-IN side effects therefore performed them every interval, for
+every live session. obol's resolver files an `org.oidc_login` audit row and a curated evidence
+entry, and accepts pending invites: turning the flag on would have fabricated one "sign-in" per
+session every 5 minutes onto a tamper-evident legal record.
+
+### What changed
+
+- **`type Admission`**, `AdmissionLogin` (the callback) and `AdmissionRevalidation` (re-resolution).
+- **`AdmissionFromContext(ctx) Admission`** — read it inside the resolver. It answers `""` for a
+  context the library did not build (a resolver called by the consumer's own code); treat that as
+  neither kind.
+- The admission function places the kind on the context it hands the resolver; the callback passes
+  `AdmissionLogin`, re-resolution `AdmissionRevalidation`.
+- `ClientVersion` = `go-vai-oidc/0.26.0`.
+- Test: `TestAdmissionKindReachesTheResolver` drives the REAL callback and the real revalidation
+  path. Mutation-probed: passing the wrong kind at the callback turns it red.
+
+### Adopting it
+
+A resolver with sign-in side effects: perform them only when
+`vaioidc.AdmissionFromContext(ctx) == vaioidc.AdmissionLogin`, then set `ReresolveOnRevalidate`.
+
 ## v0.25.0 — 2026-09-29
 
 **`ReresolveOnRevalidate`: an org or role change in the identity backend reaches a live session.**
