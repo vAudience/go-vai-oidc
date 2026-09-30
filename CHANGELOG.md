@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.27.0 — 2026-09-30
+
+**`ContextWithAdmission`: a consumer can test its resolver's revalidation arm.** Additive.
+`AdmissionFromContext`'s key is unexported, so before this only the library could build a context
+that says `AdmissionRevalidation`: the one arm a sign-in side effect must skip was unreachable from a
+consumer's unit test (found adopting v0.26.0 in obol, obol#151). `ContextWithAdmission(ctx, kind)`
+builds it; the admission path now uses it too. `ClientVersion` = `go-vai-oidc/0.27.0`.
+
 ## v0.26.0 — 2026-09-30
 
 **`AdmissionFromContext`: a UserResolver can tell a sign-in from a revalidation.** Additive: one
