@@ -62,3 +62,9 @@ func TestAdmissionKindReachesTheResolver(t *testing.T) {
 		assert.Equal(t, Admission(""), AdmissionFromContext(nil))
 	})
 }
+
+func TestContextWithAdmissionRoundTrips(t *testing.T) {
+	for _, k := range []Admission{AdmissionLogin, AdmissionRevalidation} {
+		assert.Equal(t, k, AdmissionFromContext(ContextWithAdmission(context.Background(), k)))
+	}
+}

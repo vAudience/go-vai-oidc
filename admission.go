@@ -52,7 +52,7 @@ var (
 //
 // With no UserResolver configured the identity is returned as-is.
 func (a *Auth) admitIdentity(ctx context.Context, kind Admission, user *User) (*User, error) {
-	ctx = context.WithValue(ctx, admissionKey{}, kind)
+	ctx = ContextWithAdmission(ctx, kind)
 	if a.cfg.RequireEmailVerified && (user == nil || !user.EmailVerified) {
 		return nil, ErrEmailNotVerified
 	}
@@ -90,6 +90,16 @@ const (
 )
 
 type admissionKey struct{}
+
+// ContextWithAdmission returns ctx carrying kind, exactly as the library hands
+// it to the UserResolver (v0.27.0). It exists so a consumer can TEST its
+// resolver's revalidation arm without a fake identity provider: the key is
+// unexported, so without it only the library could build that context and the
+// arm a sign-in side effect must skip would be reachable by no consumer test.
+// A consumer's own code gains nothing by calling it in production.
+func ContextWithAdmission(ctx context.Context, kind Admission) context.Context {
+	return context.WithValue(ctx, admissionKey{}, kind)
+}
 
 // AdmissionFromContext reports why the UserResolver was called. It answers ""
 // for a context the library did not build — a resolver invoked directly by a
