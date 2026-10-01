@@ -102,6 +102,14 @@ type IdentityEnsureRequest struct {
 	Sub   string `json:"sub"`
 	Email string `json:"email,omitempty"`
 	Name  string `json:"name,omitempty"`
+	// Admission forwards vaioidc.AdmissionFromContext (v0.29.0): why the
+	// library asked the resolver. obol >= 3.366.0 (ADR-376) performs its
+	// SIGN-IN side effects — the login audit row, the evidence entry, invite
+	// acceptance — on a login only, and skips them on a revalidation. Omitted
+	// when the context carries no kind (a resolver called by the consumer's own
+	// code), which obol reads as it always has. An older obol's decoder ignores
+	// the unknown field, so sending it is safe ahead of the obol rollout.
+	Admission vaioidc.Admission `json:"admission,omitempty"`
 }
 
 // IdentityEnsureMembership mirrors obol's per-membership response
@@ -150,7 +158,10 @@ type obolEnvelope struct {
 // `POST /api/v1/identity/ensure` to resolve the user's org
 // membership. The resolver:
 //
-//  1. Issues a POST with {sub, email, name} from the OIDC user.
+//  1. Issues a POST with {sub, email, name} from the OIDC user, plus
+//     `admission` ("login" | "revalidation", v0.29.0) when the library
+//     built ctx: obol >= 3.366.0 skips its sign-in side effects on a
+//     revalidation; an older obol ignores the field.
 //  2. Surfaces the FULL membership set on user.Memberships (v0.14.0)
 //     so a multi-org consumer can render a picker; sets user.OrgID =
 //     memberships[0].org_id as the backward-compatible default active
@@ -200,6 +211,8 @@ func New(cfg Config) vaioidc.UserResolver {
 			Sub:   user.Sub,
 			Email: user.Email,
 			Name:  user.Name,
+			// "" (omitted) unless the library built ctx — see the field.
+			Admission: vaioidc.AdmissionFromContext(ctx),
 		})
 		if mErr != nil {
 			return nil, fmt.Errorf("obolresolver: marshal request: %w", mErr)
@@ -364,7 +377,7 @@ const headerObolClientVersion = "X-Obol-Client-Version"
 // module, which cannot carry it at all. So the honest answer to "which code
 // composed this request" is a version string this file owns, and it must be
 // bumped with versions.yaml (TestClientVersionMatchesTheManifest pins it).
-const ClientVersion = "go-vai-oidc/0.28.0"
+const ClientVersion = "go-vai-oidc/0.29.0"
 
 // admitLanding turns obol's landing object into a value the callback may act
 // on, or nil.

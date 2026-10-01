@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.29.0 — 2026-10-01
+
+**`obolresolver` forwards the admission kind to obol** (go-vai-oidc#16). Additive: the ensure request
+gains an optional `admission` field; no exported function changes.
+
+### ⛔ The gap
+
+v0.26.0 told a `UserResolver` whether it serves a login or a revalidation, and `obolresolver` had
+that fact but did not pass it on. obol's `POST /api/v1/identity/ensure` therefore could not tell a
+5-minute `ReresolveOnRevalidate` call from a real sign-in, and a consumer turning that flag on would
+have obol file one fabricated sign-in per session per interval (obol ADR-366, obol#151).
+
+### What changed
+
+- `IdentityEnsureRequest.Admission` (`json:"admission,omitempty"`), set from
+  `vaioidc.AdmissionFromContext(ctx)`: `"login"` or `"revalidation"`, and **omitted** for a context
+  the library did not build (the resolver must not guess a kind).
+- obol **≥ 3.366.0** (ADR-376) skips its sign-in side effects on `revalidation`. An older obol's
+  lenient decoder ignores the field, so the release is safe ahead of the obol rollout.
+- `ClientVersion` = `go-vai-oidc/0.29.0`.
+- Test: `TestEnsureBodyCarriesTheAdmissionKind` (both kinds, plus the bare context asserted ABSENT
+  from the raw body). Mutation-probed: sending `""` instead of the context's kind turns it red.
+
 ## v0.28.0 — 2026-09-30
 
 **Step-up: `max_age` at `/auth/login`, `User.AuthTime`, and `RecentlyAuthenticated`.** Additive: a
