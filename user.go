@@ -2,6 +2,7 @@ package vaioidc
 
 import (
 	"context"
+	"net/http"
 	"time"
 )
 
@@ -276,4 +277,38 @@ func UserFromContext(ctx context.Context) *User {
 // contextWithUser returns a new context carrying the authenticated user.
 func contextWithUser(ctx context.Context, u *User) context.Context {
 	return context.WithValue(ctx, contextKey{}, u)
+}
+
+// sessionContextKey carries the session payload the session middleware served
+// a request with (v0.30.0, go-vai-oidc#20).
+type sessionContextKey struct{}
+
+// sessionHolder is the context value: the payload, or the reason the
+// middleware decided the request has no session.
+type sessionHolder struct {
+	payload *sessionPayload
+	err     error
+}
+
+// contextWithSession records the middleware's decision on ctx.
+func contextWithSession(ctx context.Context, payload *sessionPayload, err error) context.Context {
+	return context.WithValue(ctx, sessionContextKey{}, &sessionHolder{payload: payload, err: err})
+}
+
+// currentSession returns the session payload for r: the one the session
+// middleware placed on the context when it ran, else the decrypted request
+// cookie. The returned payload is mutable and shared by every caller on this
+// request, so successive UpdateSession calls compound rather than overwrite
+// each other.
+func (a *Auth) currentSession(r *http.Request) (*sessionPayload, error) {
+	if h, ok := r.Context().Value(sessionContextKey{}).(*sessionHolder); ok {
+		if h.payload != nil {
+			return h.payload, nil
+		}
+		if h.err != nil {
+			return nil, h.err
+		}
+		return nil, ErrNoSession
+	}
+	return readSessionCookie(r, a.sessionKey, a.cfg.CookieName)
 }

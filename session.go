@@ -57,6 +57,20 @@ type sessionPayload struct {
 	// storm.
 	LastValidated int64 `json:"lv,omitempty"`
 
+	// ResolveRetryAt (v0.30.0, go-vai-oidc#19) is the unix time at which a
+	// re-resolution that SOFT-FAILED is next retried — the resolver only, never
+	// the IdP. Zero, and absent on the wire, means no retry is pending, which is
+	// what every older cookie decodes as.
+	//
+	// ⛔ IT EXISTS BECAUSE ONE ANCHOR CANNOT CARRY TWO RETRIES. Before v0.30.0 a
+	// resolver error backed off LastValidated, so the retry 30 s later re-ran the
+	// WHOLE path: a Keycloak refresh grant first, then the resolver. An outage
+	// of the identity backend therefore made every live session hit the IdP
+	// every 30 s instead of every RevalidateInterval — 10× the IdP load, caused
+	// by a different service. The IdP had already said "signed in"; that answer
+	// is recorded in LastValidated, and only the resolver's retry lives here.
+	ResolveRetryAt int64 `json:"rra,omitempty"`
+
 	// Src (v0.22.0) records HOW the session was minted. Empty — and absent on
 	// the wire — means the browser Authorization Code flow, which is also what
 	// every session minted before v0.22.0 decodes as, so an old cookie behaves

@@ -255,9 +255,13 @@ func TestReresolve_ResolverErrorFailsOpenAndBacksOff(t *testing.T) {
 	stored := persisted(t, a, rec)
 	assert.Equal(t, revalTestRotated, stored.RefreshToken, "the refreshed tokens must still be persisted")
 	assert.Equal(t, reresOrgOld, stored.OrgID)
-	wantAnchor := start.Add(revalidateTransportBackoff - reresTestInterval).Unix()
-	assert.InDelta(t, wantAnchor, stored.LastValidated, 2,
-		"the anchor must be backed off exactly as an IdP outage backs it off")
+	// v0.30.0 (go-vai-oidc#19): the IdP check SUCCEEDED and is recorded; only
+	// the resolver retry is backed off, on its own anchor.
+	assert.InDelta(t, start.Unix(), stored.LastValidated, 2,
+		"the successful IdP check must be recorded — backing LastValidated off makes the retry re-run the Keycloak grant")
+	assert.InDelta(t, start.Add(revalidateTransportBackoff).Unix(), stored.ResolveRetryAt, 2,
+		"the resolver retry must be backed off on its own anchor")
+	assert.Equal(t, before.Exp, stored.Exp, "Exp must not slide on a resolver soft-fail")
 }
 
 // The callback's two answers to an empty set, and revalidation's matching ones.

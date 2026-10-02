@@ -244,6 +244,25 @@ const (
 	// restarts, which an in-process limiter could not.
 	revalidateTransportBackoff = 30 * time.Second
 
+	// revalidateFlightRetention (v0.30.0) is how long a completed revalidation's
+	// outcome is kept for requests that carry the SAME cookie. A browser's
+	// parallel requests do not all overlap in this process: one sent just after
+	// the first still carries the old refresh token until the first response
+	// lands, and under refresh-token rotation that straggler's own grant would
+	// be `invalid_grant` — a sign-out caused by the session's own requests.
+	revalidateFlightRetention = 10 * time.Second
+
+	// revalidateSharedTimeout (v0.30.0) bounds the shared grant + re-resolution.
+	// The shared work is detached from the leader's cancellation (it serves
+	// every waiter), so it needs its own bound.
+	revalidateSharedTimeout = 30 * time.Second
+
+	// flightKindGrant / flightKindResolve namespace the two kinds of shared
+	// revalidation work: a full IdP grant (plus re-resolution), and a
+	// resolver-only retry after a resolver soft-fail.
+	flightKindGrant   = "grant"
+	flightKindResolve = "resolve"
+
 	// headerCacheControl / cacheControlNoStore keep the liveness endpoint out of
 	// every cache. A cached `authenticated: true` keeps a signed-out browser
 	// looking signed in for as long as the cache lives — the exact divergence

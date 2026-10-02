@@ -23,6 +23,12 @@ type Auth struct {
 	sessionKey []byte
 	cfg        Config
 	logger     *slog.Logger
+
+	// flights deduplicates concurrent revalidations of one session in this
+	// process (v0.30.0, go-vai-oidc#19). Zero value is ready.
+	flights revalFlights
+	// now is the clock revalidation reads; nil means time.Now. Tests set it.
+	now func() time.Time
 }
 
 // New creates an Auth instance by performing OIDC discovery against Keycloak.
@@ -162,7 +168,12 @@ func (a *Auth) RequireSession() func(http.Handler) http.Handler {
 				return
 			}
 
+			// v0.30.0 (go-vai-oidc#20): the payload THIS request was served with
+			// — possibly revalidated, re-resolved, with a rotated refresh token —
+			// travels on the context, so UpdateSession and AccessToken build on
+			// it instead of on the stale cookie the request carried.
 			ctx := contextWithUser(r.Context(), payload.toUser())
+			ctx = contextWithSession(ctx, payload, nil)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
@@ -207,7 +218,12 @@ func (a *Auth) OptionalSession() func(http.Handler) http.Handler {
 			}
 			if err == nil {
 				ctx := contextWithUser(r.Context(), payload.toUser())
-				r = r.WithContext(ctx)
+				r = r.WithContext(contextWithSession(ctx, payload, nil))
+			} else {
+				// v0.30.0: record that the middleware decided there is NO
+				// session, so UpdateSession cannot rebuild a revoked one from
+				// the cookie this request still carries.
+				r = r.WithContext(contextWithSession(r.Context(), nil, err))
 			}
 			next.ServeHTTP(w, r)
 		})
@@ -248,11 +264,23 @@ func (a *Auth) SkipPathsWithPrefix(prefix string) []string {
 // and writes the updated session back as a new cookie. IDToken and Exp are preserved,
 // and so is AuthTime (v0.28.0): a mutation of User.AuthTime is not persisted.
 // Use this for org selection (setting OrgID after login) or updating Claims.
+//
+// v0.30.0 (go-vai-oidc#20): "the current session" is the one the session
+// middleware served THIS request with, when RequireSession or OptionalSession
+// ran — including a revalidation or re-resolution that happened on this same
+// request. Before v0.30.0 it rebuilt from the cookie the request CARRIED, and
+// its Set-Cookie (written later) won: a re-resolution was reverted (a removed
+// member got the login-time memberships back), a rotated refresh token was
+// lost (the next revalidation then read invalid_grant and signed the person
+// out), and LastValidated / Exp went backwards. Without middleware it reads
+// the cookie, as before. When OptionalSession decided there is no session (for
+// example, it was revoked on this request), UpdateSession returns that error
+// rather than resurrecting the session from the cookie.
 func (a *Auth) UpdateSession(w http.ResponseWriter, r *http.Request, mutate func(*User)) error {
 	if mutate == nil {
 		return nil
 	}
-	payload, err := readSessionCookie(r, a.sessionKey, a.cfg.CookieName)
+	payload, err := a.currentSession(r)
 	if err != nil {
 		return err
 	}
@@ -388,7 +416,9 @@ func (a *Auth) AccessToken(w http.ResponseWriter, r *http.Request) (string, erro
 	if !a.cfg.RetainTokens {
 		return "", ErrTokensNotRetained
 	}
-	payload, err := readSessionCookie(r, a.sessionKey, a.cfg.CookieName)
+	// v0.30.0: the session this request was served with, not the cookie it
+	// carried — the middleware may have rotated the refresh token already.
+	payload, err := a.currentSession(r)
 	if err != nil {
 		return "", err
 	}

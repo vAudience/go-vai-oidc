@@ -140,11 +140,15 @@ the interval.
   code fails **open** and is logged. This matters more than the feature itself: treating those as a
   sign-out turns one provider blip — or one rotated client secret, which answers `invalid_client` —
   into a synchronized fleet-wide logout.
-- ⚠️ **Do not enable this against a realm that rotates refresh tokens** without addressing
-  concurrency first. Several requests arriving together after the interval elapses each perform
-  their own grant; with rotation on, the losers hold a token the winner invalidated and will fail
-  their *next* revalidation with a spurious `invalid_grant`. With `revokeRefreshToken = false` it is
-  harmless.
+- ⚠️ **Concurrent requests share one revalidation — within ONE process (v0.30.0).** Requests that
+  carry the same cookie past the interval (an SPA's parallel fetches) make **one** refresh grant and,
+  with `ReresolveOnRevalidate`, **one** resolver call; the others wait for it and get the same
+  answer, and each still writes the resulting cookie. The answer is kept for 10 s, so a request sent
+  just after the first one (still carrying the old cookie) is covered too. Before v0.30.0 each
+  request made its own grant, which under refresh-token rotation (`revokeRefreshToken = true`)
+  meant the second use of the token answered `invalid_grant` and the session **signed itself out**.
+  ⚠️ Replicas do not share this: two pods can still race one session's grant. With rotation on,
+  prefer sticky sessions, or leave `revokeRefreshToken = false`.
 - ⚠️ **Sessions issued before retention was enabled carry no refresh token** and therefore fail open
   until they expire — a bounded transition window of at most one `SessionTTL`. Killing them instead
   would mean a library upgrade signs out everyone currently logged in.
@@ -174,12 +178,17 @@ passed through the same function the login callback uses: `RequireEmailVerified`
 | a `User` with no org, no redirecting `Landing` | org-less session stored | applied as-is (org-less) |
 | a `User` with no org and a redirecting `Landing` | browser sent to the funnel | **session ended** — revalidation cannot navigate; the next login lands in the funnel |
 | `(nil, nil)`, or a login gate refuses | login refused | **session ended** (cookies cleared, request treated as signed out) |
-| an **error** | login refused | ⛔ **fail open**: old fields kept, WARN logged, refreshed tokens persisted, `Exp` not slid, next attempt backed off as for a provider outage |
+| an **error** | login refused | ⛔ **fail open**: old fields kept, WARN logged, refreshed tokens persisted, the provider check **recorded** (`LastValidated`), `Exp` not slid; **only the resolver** is retried, 30 s later (v0.30.0) |
 
 - ⛔ **An error is the backend failing to answer, not answering "no".** Ending sessions on it would
   turn one identity-backend blip into a fleet-wide logout — the same reasoning that makes only
   `invalid_grant` sign anyone out. Because `Exp` does not slide on this arm, a resolver outage longer
   than `SessionTTL` still ends the session on its own expiry.
+- ⚠️ **A resolver retry does not ask the provider again (v0.30.0).** The grant succeeded, so the
+  provider is next asked one full `RevalidateInterval` later; the resolver alone is retried every
+  30 s, and a successful retry slides `Exp` to the last provider check plus `SessionTTL`, never past
+  it. Before v0.30.0 every retry re-ran the refresh grant, so an identity-backend outage put the
+  provider under a grant every 30 s per session.
 - ⚠️ **The login gates re-run too**, on the same input, so a gate that would refuse the login ends
   the session. Pre-v0.24.0 cookies have `email_verified` false; with `RequireEmailVerified` on, the
   gate reads the refreshed ID token when there is one, so this bites only on providers that return
@@ -566,6 +575,10 @@ cfg.UserResolver = func(ctx context.Context, user *vaioidc.User) (*vaioidc.User,
 
 For multi-org users, populate `user.Memberships` and leave `OrgID` empty; render a picker post-login
 and commit the choice with `auth.UpdateSession(w, r, func(u *User){ u.OrgID = chosen })`.
+Under `RequireSession` / `OptionalSession`, `UpdateSession` (and `AccessToken`) build on the session
+the middleware served **this** request with — including a revalidation, re-resolution or rotated
+refresh token that happened on the same request — and fall back to the request cookie only when no
+session middleware ran (v0.30.0). Successive calls on one request compound.
 
 By default the resolver runs **only here**, so its answer is frozen for the life of the session; set
 `ReresolveOnRevalidate` to re-ask it on every successful revalidation (see
