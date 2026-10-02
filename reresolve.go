@@ -40,7 +40,6 @@ import (
 	"context"
 	"log/slog"
 	"maps"
-	"net/http"
 	"slices"
 
 	"golang.org/x/oauth2"
@@ -60,11 +59,14 @@ const (
 )
 
 // reresolve re-runs admission for the session in payload after the refresh
-// grant that produced fresh, and applies a successful answer to payload.
-func (a *Auth) reresolve(r *http.Request, payload *sessionPayload, fresh *oauth2.Token) reresolveOutcome {
-	identity, source := a.revalidationIdentity(r.Context(), payload, fresh)
+// grant that produced fresh (nil for a resolver-only retry), and returns the
+// outcome with, when applied, the admitted answer. It does NOT mutate payload:
+// the answer is shared by every request in a revalidation flight (v0.30.0), and
+// each applies it to its own payload with applyResolution.
+func (a *Auth) reresolve(ctx context.Context, path string, payload *sessionPayload, fresh *oauth2.Token) (reresolveOutcome, *User) {
+	identity, source := a.revalidationIdentity(ctx, payload, fresh)
 
-	resolved, err := a.admitIdentity(r.Context(), AdmissionRevalidation, identity)
+	resolved, err := a.admitIdentity(ctx, AdmissionRevalidation, identity)
 	if err != nil {
 		reason := admissionReason(err)
 		if reason == logReasonResolverFailed {
@@ -74,16 +76,16 @@ func (a *Auth) reresolve(r *http.Request, payload *sessionPayload, fresh *oauth2
 				slog.String(logKeyIdentitySource, source),
 				slog.String(logKeyError, resolverError(err).Error()),
 			)
-			return reresolveSoft
+			return reresolveSoft, nil
 		}
 		a.logger.Info(logMsgReresolveEnded,
 			slog.String(logKeyComponent, logComponent),
 			slog.String(logKeySub, payload.Sub),
 			slog.String(logKeyReason, reason),
 			slog.String(logKeyIdentitySource, source),
-			slog.String(logKeyPath, r.URL.Path),
+			slog.String(logKeyPath, path),
 		)
-		return reresolveEnded
+		return reresolveEnded, nil
 	}
 
 	// ⛔ An org-less answer whose landing redirects is, at login, a trip to the
@@ -98,20 +100,10 @@ func (a *Auth) reresolve(r *http.Request, payload *sessionPayload, fresh *oauth2
 				slog.String(logKeySub, payload.Sub),
 				slog.String(logKeyReason, logReasonLandingRedirect),
 				slog.String(logKeyIdentitySource, source),
-				slog.String(logKeyPath, r.URL.Path),
+				slog.String(logKeyPath, path),
 			)
-			return reresolveEnded
+			return reresolveEnded, nil
 		}
-	}
-
-	previousOrg := payload.OrgID
-	payload.fromUser(resolved)
-	// The one deviation from the callback: an org the person picked after
-	// login (UpdateSession) survives while it is still one of theirs. The
-	// callback resets it because a login is a fresh start; a revalidation is
-	// not, and resetting a picker's choice every interval would be a defect.
-	if previousOrg != "" && previousOrg != payload.OrgID && isMemberOf(resolved.Memberships, previousOrg) {
-		payload.OrgID = previousOrg
 	}
 
 	a.logger.Debug(logMsgReresolved,
@@ -119,13 +111,52 @@ func (a *Auth) reresolve(r *http.Request, payload *sessionPayload, fresh *oauth2
 		slog.String(logKeySub, payload.Sub),
 		slog.String(logKeyIdentitySource, source),
 	)
-	return reresolveApplied
+	return reresolveApplied, resolved
+}
+
+// applyResolution writes an admitted re-resolution into payload. The answer's
+// slices and maps are copied, because one answer is shared by every request in
+// a revalidation flight and a handler mutating its session (UpdateSession) must
+// not write through into another request's.
+func (a *Auth) applyResolution(payload *sessionPayload, resolved *User) {
+	answer := *resolved
+	answer.Memberships = cloneMemberships(resolved.Memberships)
+	answer.Claims = maps.Clone(resolved.Claims)
+	answer.RealmRoles = slices.Clone(resolved.RealmRoles)
+
+	previousOrg := payload.OrgID
+	payload.fromUser(&answer)
+	// The one deviation from the callback: an org the person picked after
+	// login (UpdateSession) survives while it is still one of theirs. The
+	// callback resets it because a login is a fresh start; a revalidation is
+	// not, and resetting a picker's choice every interval would be a defect.
+	if previousOrg != "" && previousOrg != payload.OrgID && isMemberOf(answer.Memberships, previousOrg) {
+		payload.OrgID = previousOrg
+	}
+}
+
+// cloneMemberships deep-copies a membership set (each TeamIDs slice included).
+func cloneMemberships(in []Membership) []Membership {
+	if in == nil {
+		return nil
+	}
+	out := make([]Membership, len(in))
+	for i, m := range in {
+		out[i] = m
+		out[i].TeamIDs = slices.Clone(m.TeamIDs)
+	}
+	return out
 }
 
 // revalidationIdentity builds the resolver's input: the refreshed ID token's
 // identity when there is one that verifies for this session's subject, else the
 // session's stored identity. It also reports which one it used.
 func (a *Auth) revalidationIdentity(ctx context.Context, payload *sessionPayload, fresh *oauth2.Token) (*User, string) {
+	if fresh == nil {
+		// A resolver-only retry (v0.30.0): there was no grant, so there is no
+		// refreshed ID token — the stored identity is the honest input.
+		return storedIdentity(payload), identitySourceSession
+	}
 	if raw, ok := fresh.Extra(extraIDToken).(string); ok && raw != "" && a.provider.verifier != nil {
 		// VerifyIDToken is the callback's verifier and extractor, unchanged.
 		user, err := a.VerifyIDToken(ctx, raw)

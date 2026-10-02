@@ -1,5 +1,67 @@
 # Changelog
 
+## v0.30.0 — 2026-10-02
+
+**Revalidation is deduplicated, a resolver soft-fail retries only the resolver, and `UpdateSession`
+builds on the session this request was served with** (go-vai-oidc#19, #20 — found by atlas's
+security review of adopting `ReresolveOnRevalidate`, atlas#742). Drop-in: no exported signature
+changes; the cookie gains one omitted-when-zero field (`rra`) that older cookies decode as "no retry
+pending", and an older library ignores.
+
+### ⛔ The gaps
+
+- **#19.1** — a resolver error on revalidation backed off `LastValidated`, so the retry 30 s later
+  re-ran the **whole** path: a Keycloak refresh grant, then the resolver. An identity-backend (obol)
+  outage therefore made every live session hit the IdP every 30 s instead of every
+  `RevalidateInterval` — 10× the IdP load, caused by a different service.
+- **#19.2** — the floor gated on the cookie the request carried, so N parallel requests past it made
+  N grants and N resolver calls. Under refresh-token rotation the second use of the token is
+  `invalid_grant`, which the library correctly reads as a sign-out: the session was ended by a race
+  between its own requests.
+- **#20** — `UpdateSession` rebuilt from the REQUEST cookie, and its later `Set-Cookie` won. After a
+  revalidation on the same request it reverted the re-resolution (a removed member got the login-time
+  memberships back), dropped a rotated refresh token (next revalidation: `invalid_grant`, signed
+  out), and moved `LastValidated`/`Exp` backwards. `AccessToken` had the same defect.
+
+### What changed
+
+- **Resolver soft-fail:** the successful IdP check is recorded (`LastValidated = now`), `Exp` is
+  still not slid, and only the resolver is retried, on its own anchor
+  (`sessionPayload.ResolveRetryAt`, `json:"rra,omitempty"`), after the transport backoff (30 s, or
+  half the interval when shorter). A successful retry clears it and slides `Exp` to
+  `LastValidated + SessionTTL`, never past it; an ending answer ends the session as before. The
+  retry is ignored when `ReresolveOnRevalidate` is off.
+- **Per-process dedup:** the grant (+ re-resolution) and the resolver-only retry run through a flight
+  group keyed on a SHA-256 of (subject, refresh token, validation anchor). Concurrent callers share the IdP's and the
+  resolver's ANSWERS and each applies them to its own payload (a picked org survives) and writes its
+  own cookie. The result is retained for 10 s so a straggler still carrying the old cookie is covered.
+  The shared work runs detached from the leader's cancellation, bounded by 30 s; a waiter whose own
+  request ends stops waiting and fails open. Not cross-replica.
+- **Request-scoped session:** `RequireSession` / `OptionalSession` place the payload they served the
+  request with on the context; `UpdateSession` and `AccessToken` mutate that payload (successive calls
+  compound) and read the cookie only when no session middleware ran. When `OptionalSession` decided
+  there is no session (e.g. revoked on this request), `UpdateSession` returns that error instead of
+  resurrecting the session from the cookie.
+- `obolresolver.ClientVersion` = `go-vai-oidc/0.30.0`.
+
+### Tests (each mutation-proven: reverting the fix turns the named test red)
+
+- `TestRevalidate_ResolverSoftFailRetriesTheResolverNotTheIdP` — soft-fail, then a request 31 s
+  later makes **no** second grant; the resolver is retried; recovery slides `Exp` only to the IdP
+  check's bound.
+- `TestRevalidate_ConcurrentRequestsShareOneGrantAndOneResolverCall` — 8 parallel requests plus a
+  straggler against a rotating IdP: one grant, one resolver call, every request served, every cookie
+  carrying the rotated token. Red on bypassing the flight group, and on zero retention.
+- `TestUpdateSession_BuildsOnThePayloadTheMiddlewareServed` — `RequireSession` + a handler calling
+  `UpdateSession` twice: the cookie carries the re-resolved memberships, the rotated refresh token,
+  the new `LastValidated`/`Exp`, and both mutations.
+- `TestRevalidate_ARetainedAnswerNeverServesALaterRevalidation` — the flight key includes the
+  validation anchor, so a retained answer never stands in for a later due revalidation (red when the
+  anchor is dropped from the key).
+- `TestUpdateSession_DoesNotResurrectASessionRevokedOnThisRequest`,
+  `TestAccessToken_UsesThePayloadTheMiddlewareServed`.
+- `TestReresolve_ResolverErrorFailsOpenAndBacksOff` now pins the new anchors.
+
 ## v0.29.0 — 2026-10-01
 
 **`obolresolver` forwards the admission kind to obol** (go-vai-oidc#16). Additive: the ensure request

@@ -57,9 +57,11 @@ package vaioidc
 // second ceiling here would be a second owner of one policy.
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -75,17 +77,31 @@ import (
 //
 // It never returns a nil payload with a nil error, and it never returns an error
 // other than ErrSessionRevoked: every other outcome is a fail-open.
+//
+// v0.30.0 (go-vai-oidc#19): two kinds of work can be due. The IdP floor
+// (LastValidated + RevalidateInterval) runs the grant and, when configured, the
+// re-resolution; a pending resolver retry (ResolveRetryAt) re-asks ONLY the
+// resolver. Both run through a.flights, so concurrent requests carrying one
+// cookie share one grant and one resolver call.
 func (a *Auth) maybeRevalidate(w http.ResponseWriter, r *http.Request, payload *sessionPayload) (*sessionPayload, error) {
 	if a.cfg.RevalidateInterval <= 0 || payload == nil {
 		return payload, nil
 	}
 
-	now := time.Now().UTC()
+	now := a.clock()
 	age := now.Sub(time.Unix(a.validationAnchor(payload), 0))
-	if age < a.cfg.RevalidateInterval {
-		return payload, nil
+	if age >= a.cfg.RevalidateInterval {
+		return a.revalidateAtIdP(w, r, payload, now, age)
 	}
+	if a.resolveRetryDue(payload, now) {
+		return a.retryResolution(w, r, payload, now)
+	}
+	return payload, nil
+}
 
+// revalidateAtIdP asks the IdP (a forced refresh grant) and, when configured,
+// the resolver, and applies the shared answers to payload.
+func (a *Auth) revalidateAtIdP(w http.ResponseWriter, r *http.Request, payload *sessionPayload, now time.Time, age time.Duration) (*sessionPayload, error) {
 	// A session with no refresh token cannot be asked about. Fail OPEN and say
 	// so at DEBUG rather than WARN: on a fleet mid-upgrade this is the expected
 	// state for every session issued before retention, and a warning per request
@@ -98,8 +114,36 @@ func (a *Auth) maybeRevalidate(w http.ResponseWriter, r *http.Request, payload *
 		return payload, nil
 	}
 
-	fresh, err := a.provider.forcedRefresh(r.Context(), payload.RefreshToken)
-	if err != nil {
+	// ⛔ The key is the refresh token the cookie carries (with the subject):
+	// every request holding that token is asking the SAME question, and under
+	// rotation only the first may ask it. The validation anchor is part of the
+	// key so a retained answer can only ever serve the SAME due revalidation —
+	// never a later one whose cookie happens to carry an unrotated token (with a
+	// short interval, that would answer from memory instead of asking the IdP).
+	// The leader's payload is the input; each caller applies the answers to its
+	// own payload below.
+	leader := *payload
+	key := flightKey(flightKindGrant, payload.Sub, payload.RefreshToken,
+		strconv.FormatInt(payload.LastValidated, 10), strconv.FormatInt(payload.Exp, 10))
+	shared := a.flights.do(r.Context(), key, a.clock, func() revalShared {
+		ctx, cancel := sharedContext(r)
+		defer cancel()
+		fresh, err := a.provider.forcedRefresh(ctx, leader.RefreshToken)
+		if err != nil {
+			return revalShared{grantErr: err}
+		}
+		out := revalShared{fresh: fresh, aut: a.refreshedAuthTime(ctx, &leader, fresh)}
+		// v0.25.0: re-ask the identity backend too, when configured. It runs
+		// only on a SUCCESSFUL grant — the IdP has just said this person is
+		// signed in, so the remaining question is what they may now hold.
+		if a.cfg.ReresolveOnRevalidate {
+			out.reresolved = true
+			out.outcome, out.resolved = a.reresolve(ctx, r.URL.Path, &leader, fresh)
+		}
+		return out
+	})
+
+	if err := shared.grantErr; err != nil {
 		if isSessionRevoked(err) {
 			a.logger.Info(logMsgSessionRevoked,
 				slog.String(logKeyComponent, logComponent),
@@ -124,6 +168,7 @@ func (a *Auth) maybeRevalidate(w http.ResponseWriter, r *http.Request, payload *
 		return payload, nil
 	}
 
+	fresh := shared.fresh
 	payload.AccessToken = fresh.AccessToken
 	payload.AccessTokenExp = fresh.Expiry.Unix()
 	// Keycloak MAY rotate the refresh token. Keep the old one when it does not:
@@ -148,25 +193,35 @@ func (a *Auth) maybeRevalidate(w http.ResponseWriter, r *http.Request, payload *
 
 	// v0.28.0: a refresh is not an authentication. auth_time from a verified
 	// refreshed ID token may FILL an unknown or move EARLIER, never later.
-	payload.Aut = mergeRefreshedAuthTime(payload.Aut, a.refreshedAuthTime(r, payload, fresh))
+	payload.Aut = mergeRefreshedAuthTime(payload.Aut, shared.aut)
 
-	// v0.25.0: re-ask the identity backend too, when configured. It runs only
-	// on a SUCCESSFUL grant — the IdP has just said this person is signed in,
-	// so the remaining question is what they may now hold.
-	if a.cfg.ReresolveOnRevalidate {
-		switch a.reresolve(r, payload, fresh) {
+	if shared.reresolved {
+		switch shared.outcome {
 		case reresolveEnded:
 			clearSessionCookie(w, a.cfg.CookieName, a.cfg.CookiePath, a.cfg.secureCookie())
 			return nil, ErrSessionRevoked
 		case reresolveSoft:
-			// Fail OPEN: keep the old resolved fields, persist the refreshed
-			// tokens (a rotated refresh token must not be lost), do NOT slide
-			// Exp, and back off like an IdP outage.
-			a.persistBackoff(w, payload, now)
+			// Fail OPEN: keep the old resolved fields and persist the
+			// refreshed tokens (a rotated refresh token must not be lost).
+			//
+			// ⛔ v0.30.0 (go-vai-oidc#19): the IdP check SUCCEEDED, so it is
+			// RECORDED — LastValidated = now — and only the RESOLVER is retried,
+			// on its own anchor. Backing off LastValidated instead (v0.25.0 …
+			// v0.29.0) made the retry re-run the Keycloak grant every 30 s per
+			// session for as long as the identity backend was down.
+			//
+			// Exp still does NOT slide: a session must not gain life while its
+			// resolution cannot be re-derived. The retry slides it to what this
+			// IdP check allowed (LastValidated + SessionTTL) once it succeeds.
+			payload.LastValidated = now.Unix()
+			payload.ResolveRetryAt = now.Add(a.transportBackoff()).Unix()
+			a.writeSession(w, payload)
 			return payload, nil
 		case reresolveApplied:
+			a.applyResolution(payload, shared.resolved)
 		}
 	}
+	payload.ResolveRetryAt = 0
 	payload.LastValidated = now.Unix()
 	// The session becomes SLIDING here. Before v0.19.0 Exp was set once at login
 	// and never moved, so a session was an absolute 24h grant; now an active
@@ -174,14 +229,7 @@ func (a *Auth) maybeRevalidate(w http.ResponseWriter, r *http.Request, payload *
 	// is the realm's ssoSessionMaxLifespan, enforced by the grant above failing.
 	payload.Exp = now.Add(a.cfg.SessionTTL).Unix()
 
-	if writeErr := setSessionCookie(w, payload, a.sessionKey, a.cfg.CookieName, a.cfg.CookiePath, a.cfg.secureCookie(), a.logger); writeErr != nil {
-		// Non-fatal by the same reasoning AccessToken() uses: the IdP said this
-		// person is signed in, and failing the request would be a worse answer
-		// than serving it against a session whose stamp did not persist.
-		a.logger.Warn(logMsgTokenPersistFail,
-			slog.String(logKeyComponent, logComponent),
-			slog.String(logKeyError, writeErr.Error()),
-		)
+	if !a.writeSession(w, payload) {
 		return payload, nil
 	}
 
@@ -193,15 +241,84 @@ func (a *Auth) maybeRevalidate(w http.ResponseWriter, r *http.Request, payload *
 	return payload, nil
 }
 
+// resolveRetryDue reports whether a soft-failed re-resolution is due to be
+// retried. A retry recorded under ReresolveOnRevalidate is ignored once the flag
+// is off; the next full revalidation clears it.
+func (a *Auth) resolveRetryDue(payload *sessionPayload, now time.Time) bool {
+	return a.cfg.ReresolveOnRevalidate && payload.ResolveRetryAt > 0 && now.Unix() >= payload.ResolveRetryAt
+}
+
+// retryResolution re-asks ONLY the resolver, after a re-resolution soft-failed
+// on a revalidation whose IdP grant succeeded (v0.30.0, go-vai-oidc#19). The IdP
+// is not asked: its last answer is LastValidated, and its floor is unchanged.
+//
+// The resolver's input is the identity the session stores — there is no fresh
+// ID token, because there was no grant.
+func (a *Auth) retryResolution(w http.ResponseWriter, r *http.Request, payload *sessionPayload, now time.Time) (*sessionPayload, error) {
+	leader := *payload
+	key := flightKey(flightKindResolve, payload.Sub, payload.RefreshToken,
+		strconv.FormatInt(payload.LastValidated, 10), strconv.FormatInt(payload.ResolveRetryAt, 10))
+	shared := a.flights.do(r.Context(), key, a.clock, func() revalShared {
+		ctx, cancel := sharedContext(r)
+		defer cancel()
+		out := revalShared{reresolved: true}
+		out.outcome, out.resolved = a.reresolve(ctx, r.URL.Path, &leader, nil)
+		return out
+	})
+	if shared.grantErr != nil {
+		// The shared work was abandoned (a panic, or this request's own
+		// cancellation): fail open, change nothing, retry on a later request.
+		return payload, nil
+	}
+
+	switch shared.outcome {
+	case reresolveEnded:
+		clearSessionCookie(w, a.cfg.CookieName, a.cfg.CookiePath, a.cfg.secureCookie())
+		return nil, ErrSessionRevoked
+	case reresolveSoft:
+		payload.ResolveRetryAt = now.Add(a.transportBackoff()).Unix()
+		a.writeSession(w, payload)
+		return payload, nil
+	case reresolveApplied:
+	}
+	a.applyResolution(payload, shared.resolved)
+	payload.ResolveRetryAt = 0
+	// Slide Exp to what the last IdP check allowed — exactly what a grant that
+	// had re-resolved successfully at LastValidated would have stamped — and
+	// never shorten it.
+	if allowed := payload.LastValidated + int64(a.cfg.SessionTTL.Seconds()); allowed > payload.Exp {
+		payload.Exp = allowed
+	}
+	a.writeSession(w, payload)
+	return payload, nil
+}
+
+// writeSession writes payload back as the session cookie and reports whether it
+// persisted.
+//
+// A failure is non-fatal by the same reasoning AccessToken() uses: the IdP said
+// this person is signed in, and failing the request would be a worse answer
+// than serving it against a session whose stamp did not persist.
+func (a *Auth) writeSession(w http.ResponseWriter, payload *sessionPayload) bool {
+	if err := setSessionCookie(w, payload, a.sessionKey, a.cfg.CookieName, a.cfg.CookiePath, a.cfg.secureCookie(), a.logger); err != nil {
+		a.logger.Warn(logMsgTokenPersistFail,
+			slog.String(logKeyComponent, logComponent),
+			slog.String(logKeyError, err.Error()),
+		)
+		return false
+	}
+	return true
+}
+
 // refreshedAuthTime returns the auth_time (unix seconds) of the refreshed ID
 // token when the grant returned one that verifies for this session's subject,
 // else 0. A token that does not verify is not evidence of anything.
-func (a *Auth) refreshedAuthTime(r *http.Request, payload *sessionPayload, fresh *oauth2.Token) int64 {
+func (a *Auth) refreshedAuthTime(ctx context.Context, payload *sessionPayload, fresh *oauth2.Token) int64 {
 	raw, ok := fresh.Extra(extraIDToken).(string)
 	if !ok || raw == "" || a.provider.verifier == nil {
 		return 0
 	}
-	user, err := a.VerifyIDToken(r.Context(), raw)
+	user, err := a.VerifyIDToken(ctx, raw)
 	if err != nil || user.Sub != payload.Sub {
 		return 0
 	}
@@ -238,15 +355,20 @@ func (a *Auth) validationAnchor(payload *sessionPayload) int64 {
 // request retries sooner, which is the behaviour this exists to soften, not to
 // guarantee.
 func (a *Auth) persistBackoff(w http.ResponseWriter, payload *sessionPayload, now time.Time) {
-	backoff := revalidateTransportBackoff
-	// A backoff at or beyond the interval would push the anchor into the future
-	// and suppress revalidation for longer than the configured floor. Under a
-	// short interval, half of it is the most that can be borrowed.
-	if backoff >= a.cfg.RevalidateInterval {
-		backoff = a.cfg.RevalidateInterval / 2
-	}
-	payload.LastValidated = now.Add(backoff - a.cfg.RevalidateInterval).Unix()
+	payload.LastValidated = now.Add(a.transportBackoff() - a.cfg.RevalidateInterval).Unix()
 	_ = setSessionCookie(w, payload, a.sessionKey, a.cfg.CookieName, a.cfg.CookiePath, a.cfg.secureCookie(), a.logger)
+}
+
+// transportBackoff is how long a fail-open outcome waits before its retry.
+//
+// A backoff at or beyond the interval would push the anchor into the future and
+// suppress revalidation for longer than the configured floor. Under a short
+// interval, half of it is the most that can be borrowed.
+func (a *Auth) transportBackoff() time.Duration {
+	if revalidateTransportBackoff >= a.cfg.RevalidateInterval {
+		return a.cfg.RevalidateInterval / 2
+	}
+	return revalidateTransportBackoff
 }
 
 // isSessionRevoked reports whether err is the IdP's explicit verdict that this
