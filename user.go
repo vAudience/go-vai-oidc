@@ -2,7 +2,9 @@ package vaioidc
 
 import (
 	"context"
+	"maps"
 	"net/http"
+	"slices"
 	"time"
 )
 
@@ -262,6 +264,23 @@ func (u *User) TeamIDsForOrg(orgID string) []string {
 		}
 	}
 	return nil
+}
+
+// clone returns a deep copy of u: every slice, map and pointer the session
+// payload could share is copied, so the caller can mutate the result freely.
+func (u *User) clone() *User {
+	if u == nil {
+		return nil
+	}
+	c := *u
+	c.Memberships = cloneMemberships(u.Memberships)
+	c.Claims = maps.Clone(u.Claims)
+	c.RealmRoles = slices.Clone(u.RealmRoles)
+	if u.Landing != nil {
+		l := *u.Landing
+		c.Landing = &l
+	}
+	return &c
 }
 
 // contextKey is an unexported type for context keys to prevent collisions.

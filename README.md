@@ -580,6 +580,17 @@ the middleware served **this** request with — including a revalidation, re-res
 refresh token that happened on the same request — and fall back to the request cookie only when no
 session middleware ran (v0.30.0). Successive calls on one request compound.
 
+**Reading without writing (v0.31.0).** `auth.Session(r)` returns the same session as a deep copy
+and has no side effect: no IdP call, no token rotation, no re-encryption, no cookie.
+`auth.UpdateSessionIf(w, r, func(u *User) bool { … })` writes the cookie only when the function
+reports a change, so a read-mostly handler never re-sends (and so never overwrites) a refresh token
+another tab just rotated.
+
+⛔ **`Session` is not an authentication gate.** It skips revalidation, so a session the IdP has
+already ended reads as valid until its own expiry. Decide whether to serve a request with
+`RequireSession` / `OptionalSession`; use `Session` only behind them, or where a stale identity is
+acceptable.
+
 By default the resolver runs **only here**, so its answer is frozen for the life of the session; set
 `ReresolveOnRevalidate` to re-ask it on every successful revalidation (see
 "Re-resolution on revalidation" above).

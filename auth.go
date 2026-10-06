@@ -290,6 +290,74 @@ func (a *Auth) UpdateSession(w http.ResponseWriter, r *http.Request, mutate func
 	return setSessionCookie(w, payload, a.sessionKey, a.cfg.CookieName, a.cfg.CookiePath, a.cfg.secureCookie(), a.logger)
 }
 
+// Session returns the session r is served with, WITHOUT any side effect: it
+// never revalidates against the IdP, never rotates or refreshes a token, never
+// re-encrypts the payload and never writes a cookie (v0.31.0, go-vai-oidc#22).
+//
+// ⛔ IT IS NOT AN AUTHENTICATION GATE. Revalidation (Config.RevalidateInterval)
+// is the only mechanism that notices a person who signed out, was disabled or
+// had their session revoked at the IdP, and Session skips it by design — so a
+// session the IdP has already ended is returned as valid until its own Exp. Use
+// it only on a request that already passed RequireSession or OptionalSession
+// (which did revalidate), or where reading a possibly-stale identity is
+// acceptable. To decide whether to SERVE a request, use the middleware.
+//
+// What it does check is everything the middleware checks short of the IdP:
+// the cookie (or its chunk set) is reassembled, authenticated and decrypted by
+// the same decoder, and the session's own expiry is enforced. The errors are
+// the middleware's sentinels — ErrNoSession, ErrSessionInvalid,
+// ErrSessionExpired — and, when OptionalSession decided on this request that
+// there is no session (for example ErrSessionRevoked), that decision.
+//
+// When a session middleware ran, the answer is the payload it served the
+// request with — including a revalidation, a re-resolution or an UpdateSession
+// made earlier on this same request — exactly as UpdateSession and AccessToken
+// see it. Without middleware it decodes the request cookie.
+//
+// The returned User is a deep copy: mutating it changes neither the session
+// nor a later call's answer. Persist a change with UpdateSession or
+// UpdateSessionIf.
+func (a *Auth) Session(r *http.Request) (*User, error) {
+	payload, err := a.currentSession(r)
+	if err != nil {
+		return nil, err
+	}
+	return payload.toUser().clone(), nil
+}
+
+// UpdateSessionIf is UpdateSession that writes the cookie only when mutate
+// reports a change (v0.31.0, go-vai-oidc#22). It reports whether it wrote.
+//
+// It exists for the read-mostly handler that must not write a cookie it has no
+// reason to write: every Set-Cookie of the session re-sends the refresh token
+// THIS request carried, so a needless write from one tab can overwrite a
+// rotation another tab made a moment earlier — and the next revalidation then
+// presents a revoked token and signs the person out.
+//
+// mutate receives a deep copy. When it returns false nothing is persisted —
+// neither the cookie nor the request-scoped session a later UpdateSession on
+// this request builds on — even if the copy was modified. When it returns
+// true the change is applied exactly as UpdateSession applies it (IDToken, Exp
+// and AuthTime preserved).
+func (a *Auth) UpdateSessionIf(w http.ResponseWriter, r *http.Request, mutate func(*User) bool) (bool, error) {
+	if mutate == nil {
+		return false, nil
+	}
+	payload, err := a.currentSession(r)
+	if err != nil {
+		return false, err
+	}
+	user := payload.toUser().clone()
+	if !mutate(user) {
+		return false, nil
+	}
+	payload.fromUser(user)
+	if err := setSessionCookie(w, payload, a.sessionKey, a.cfg.CookieName, a.cfg.CookiePath, a.cfg.secureCookie(), a.logger); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // VerifyIDToken cryptographically verifies a raw Keycloak ID-token JWT
 // against the OIDC provider's published JWKS and returns the extracted
 // User. v0.11.0+.
