@@ -1,5 +1,53 @@
 # Changelog
 
+## v0.31.0 — 2026-10-07
+
+**A side-effect-free session read, and an update that writes only on a change** (go-vai-oidc#22,
+asked by aigentverse's `GET /auth/reseat`). Purely additive: two new methods, no signature or
+behaviour change for existing callers.
+
+### The gap
+
+There was no way to READ the session without a write. `OptionalSession` / `RequireSession` may
+revalidate and rotate the refresh token; `UpdateSession` always re-encrypts and writes the cookie. A
+consumer that only needed to read had to call `UpdateSession` with a copy-only mutation and a
+throwaway `ResponseWriter` — re-encrypting for nothing and, under `RetainTokens`, logging the
+chunked-cookie WARN on every read. And a consumer that writes only *sometimes* had no way to skip
+the write: every session `Set-Cookie` re-sends the refresh token this request carried, so a needless
+write can overwrite a rotation another tab made a moment earlier.
+
+### What changed
+
+- **`Auth.Session(r) (*User, error)`** — the session r is served with: under the middleware, the
+  request-scoped payload (revalidation, re-resolution and earlier `UpdateSession` calls included);
+  otherwise the decoded cookie, through the SAME decoder the middleware uses, with the session's own
+  expiry enforced. The middleware's sentinels (`ErrNoSession`, `ErrSessionInvalid`,
+  `ErrSessionExpired`, or the reason `OptionalSession` recorded, e.g. `ErrSessionRevoked`). Never
+  revalidates, rotates, re-encrypts or writes. Returns a deep copy.
+  ⛔ **Not an authentication gate**: it skips revalidation, so an IdP-ended session reads as valid
+  until its own expiry. Gate with the middleware; read with this.
+- **`Auth.UpdateSessionIf(w, r, mutate func(*User) bool) (bool, error)`** — `UpdateSession` that
+  writes only when `mutate` returns true, and reports whether it wrote. `mutate` gets a deep copy, so
+  a declined change persists nothing — neither the cookie nor the request-scoped session a later
+  `UpdateSession` builds on.
+- `obolresolver.ClientVersion` = `go-vai-oidc/0.31.0`.
+
+### Tests (each mutation-proven: ten mutations, each turned its named test red)
+
+- `TestSession_HasNoSideEffect` — fresh, stale-past-the-revalidation-floor and chunked `RetainTokens`
+  sessions: zero IdP calls, no chunked-cookie WARN. Red when Session revalidates or re-encrypts.
+- `TestSession_VerdictsMatchTheMiddleware` — valid, chunked, expired, absent, tampered and
+  missing-chunk cookies driven through BOTH `OptionalSession` and `Session`: same served/refused
+  verdict, same sentinel. Red when the expiry check is dropped.
+- `TestSession_ReturnsADeepCopy` — under the middleware (where readers share one payload) editing the
+  returned memberships, team ids, claims and realm roles leaves a second read unchanged. Red on a
+  shallow copy of each field.
+- `TestSession_ReadsThePayloadThisRequestIsServedWith` — sees an earlier `UpdateSession`; returns
+  `ErrSessionRevoked` for a session revoked on this request. Red when Session reads the cookie
+  instead of the request-scoped payload.
+- `TestUpdateSessionIf` — declined: no cookie, no change visible (slice elements included); applied:
+  cookie written, change visible. Red when the bool is ignored or the copy is shallow.
+
 ## v0.30.0 — 2026-10-02
 
 **Revalidation is deduplicated, a resolver soft-fail retries only the resolver, and `UpdateSession`
