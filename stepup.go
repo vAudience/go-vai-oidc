@@ -33,6 +33,7 @@ package vaioidc
 // cannot make an old authentication look recent to RecentlyAuthenticated.
 
 import (
+	"errors"
 	"log/slog"
 	"math"
 	"net/http"
@@ -180,7 +181,17 @@ func checkAuthTime(authTime time.Time, maxAge int64, startedAt time.Time) string
 // verifyRequestedMaxAge runs the callback's max_age check when the login asked
 // for one. It returns false (and logs) when the login must be refused.
 func (a *Auth) verifyRequestedMaxAge(r *http.Request, authTime time.Time) bool {
-	c, err := r.Cookie(cookieOIDCMaxAge)
+	c, err := uniqueCookie(r, a.cfg.flowCookieName(cookieOIDCMaxAge))
+	if errors.Is(err, errDuplicateCookie) {
+		// v0.32.0: a planted second marker must not decide whether auth_time
+		// is checked; refuse rather than read either one.
+		a.logger.Warn(logMsgAuthTimeRefused,
+			slog.String(logKeyComponent, logComponent),
+			slog.String(logKeyReason, logReasonMaxAgeCookieDuplicate),
+			slog.String(logKeyClientIP, clientIP(r)),
+		)
+		return false
+	}
 	if err != nil || c.Value == "" {
 		return true // no max_age requested: nothing to verify (every pre-v0.28.0 login)
 	}

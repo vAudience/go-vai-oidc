@@ -1,5 +1,60 @@
 # Changelog
 
+## v0.32.0 — 2026-10-10
+
+**Cookie-tossing hardening: `__Host-` cookies, duplicate refusal, same-site callback refusal**
+(asked by insula's security review). Additive: with neither new option set, every cookie name and
+attribute is byte-for-byte what v0.31.0 wrote.
+
+### The gap
+
+A login host whose parent domain is not on the Public Suffix List shares a site with every sibling
+host, and a sibling can set `Domain=<parent>` cookies the login host reads. The flow cookies
+(`vai_oidc_state`, `vai_pkce_verifier`) were unprefixed, so a hostile sibling could plant its own
+state + verifier and navigate a victim to `/callback?code=<attacker's>&state=<attacker's>`: login
+CSRF into the attacker's account (the state cookie also carries the post-login redirect).
+
+### What changed
+
+- **`Config.CookieHostPrefix bool`** (opt-in) — every cookie the package sets gets the `__Host-`
+  prefix: state, PKCE verifier, sync marker, step-up `max_age` marker, and the session cookie and
+  its chunks (`CookieName` is prefixed unless it already is). `New()` refuses it with
+  `InsecureCookie` or a `CookiePath` other than `/` (`ErrInvalidConfig`), because browsers silently
+  drop a `__Host-` cookie that is not Secure + Path=/. Enabling it signs existing sessions out once
+  (the session cookie is renamed).
+- **Duplicate flow cookies are refused (always on).** The login callback, the sync callback and
+  the step-up `max_age` check read their cookies through `uniqueCookie`: two cookies of one name is
+  a tossed one, refused through the existing paths (redirect to `LogoutRedirect`; sync → `error`;
+  `max_age` → login refused). The login callback clears this host's flow cookies on that path. A
+  request that only ever carried ONE of each behaves exactly as before.
+- **`Config.RejectSameSiteCallback bool`** (opt-in) — the callback refuses a request whose
+  `Sec-Fetch-Site` is `same-site` or `same-origin`; an absent header passes. Nothing is cleared, so
+  a genuine login in flight survives the attempt. ⛔ Not for an IdP that is same-site with the
+  callback.
+- `New()` warns (does not refuse) when a hand-written `__Host-` `CookieName` cannot be satisfied
+  (`InsecureCookie` or `CookiePath != "/"`), so no upgrade becomes a boot failure.
+- No server-side MAC binding state to verifier: the IdP already binds the code to the PKCE
+  challenge and the state is compared in constant time; a tossing attacker plants a genuine pair it
+  obtained from `/auth/login` itself, which a MAC would accept. See `cookieguard.go`.
+- `obolresolver.ClientVersion` = `go-vai-oidc/0.32.0`.
+- **Build toolchain `go1.25.13` → `go1.26.9`** (`go.mod` `toolchain`; the `go 1.25.0` consumer
+  floor is unchanged). `make vuln` was red on main: nine stdlib advisories (GO-2026-6603..6617 in
+  net/http, net/textproto, crypto/tls) have no fix on the 1.25 line (go1.25.14 still reports them).
+  ⚠️ `make lint` now needs a golangci-lint built with Go ≥ 1.26
+  (`GOTOOLCHAIN=go1.26.9 go install …golangci-lint@…`, or `make lint GOLANGCI_LINT=<path>`).
+
+### Tests (mutation-proven: reading the first duplicate, a no-op prefix, a dropped Secure check and
+a no-op Sec-Fetch-Site check each turn their named tests red)
+
+- `TestConfig_CookieHostPrefix_Validation`, `TestConfig_HandPrefixedNameWithoutOptionWarns`.
+- `TestLogin_FlowCookieNamesAndAttributes`, `TestLogin_DefaultSetCookieHeaderIsUnchanged` — the
+  default `Set-Cookie` lines are pinned verbatim.
+- `TestCallback_CookieHostPrefix` — prefixed flow signs in with a prefixed session; planted
+  unprefixed cookies never reach the token endpoint.
+- `TestCallback_DuplicateFlowCookieIsRefused` — tossed state (sorted first), verifier, both, and
+  `max_age` marker, each against a passing control; `TestSyncCallback_DuplicateFlowCookieIsAnError`.
+- `TestCallback_RejectSameSiteCallback`, `TestSyncCallback_RejectSameSiteCallback`, `TestUniqueCookie`.
+
 ## v0.31.0 — 2026-10-07
 
 **A side-effect-free session read, and an update that writes only on a change** (go-vai-oidc#22,

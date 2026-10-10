@@ -79,6 +79,49 @@ type Config struct {
 	CookiePath     string        // Session cookie path (default: "/")
 	InsecureCookie bool          // Set true to allow cookies over plain HTTP (default: false = HTTPS-only)
 
+	// Optional: `__Host-` cookie prefix (v0.32.0, default false = the
+	// pre-v0.32.0 cookie names exactly).
+	//
+	// When true, EVERY cookie this package sets carries the `__Host-` prefix:
+	// the session cookie (and its chunks) and the flow cookies (state, PKCE
+	// verifier, the session-sync marker and the step-up max_age marker). A
+	// browser accepts a `__Host-` cookie only when it is Secure, has Path=/
+	// and carries NO Domain attribute — so a sibling host on the same site
+	// (another subdomain of a parent domain that is not on the Public Suffix
+	// List) can no longer plant ("toss") a cookie this package will read.
+	// Without it, a hostile sibling can set its own state + verifier on the
+	// parent domain and navigate the victim to the callback with its own
+	// code: a login CSRF that signs the victim into the attacker's account.
+	//
+	// ⛔ New() REFUSES the combination with InsecureCookie or a CookiePath
+	// other than "/": the browser would silently drop every cookie and every
+	// login would end at LogoutRedirect. This package never sets a cookie
+	// Domain, so that requirement is always met.
+	//
+	// ⚠️ Turning it on RENAMES the session cookie (CookieName gains the
+	// prefix unless it already has it), so every existing session is signed
+	// out once, and a login in flight across the deploy ends at
+	// LogoutRedirect. Not usable for the path-prefix portal pattern
+	// (CookiePath "/<product>"), which cannot satisfy Path=/.
+	CookieHostPrefix bool
+
+	// Optional: refuse callbacks that the browser marks as navigated from the
+	// same site (v0.32.0, default false = pre-v0.32.0).
+	//
+	// When true, /callback answers a request whose `Sec-Fetch-Site` header is
+	// `same-site` or `same-origin` the way it answers a missing state cookie
+	// (redirect to LogoutRedirect; a session-sync callback reports `error`).
+	// A genuine callback is a redirect from the IdP, which a browser reports
+	// as `cross-site`; a navigation started by a sibling host is `same-site`.
+	// A request without the header (an older browser) is let through.
+	//
+	// ⛔ DO NOT ENABLE IT WHEN THE IdP IS SAME-SITE WITH THE CALLBACK (e.g.
+	// keycloak.example.com and app.example.com): every legitimate callback is
+	// then `same-site` and every login fails. It is defence in depth only — an
+	// attacker can launder the navigation through any cross-site redirector —
+	// the control against cookie tossing is CookieHostPrefix.
+	RejectSameSiteCallback bool
+
 	// Optional: OIDC.
 	Scopes []string // OIDC scopes (default: [openid, profile, email])
 
@@ -349,6 +392,16 @@ func (c *Config) secureCookie() bool {
 	return !c.InsecureCookie
 }
 
+// flowCookieName returns the name a flow cookie (state, PKCE verifier, sync
+// marker, max_age marker) is written and read under: the base name, or the
+// `__Host-` prefixed name under CookieHostPrefix (v0.32.0).
+func (c *Config) flowCookieName(base string) string {
+	if c.CookieHostPrefix {
+		return cookieHostPrefix + base
+	}
+	return base
+}
+
 // discoveryURL returns the OIDC issuer/discovery URL: the explicit generic
 // IssuerURL when set, otherwise the Keycloak convenience composition
 // (KeycloakURL + "/realms/" + Realm). go-oidc appends
@@ -384,6 +437,10 @@ func (c *Config) applyDefaults() {
 	}
 	if c.CookiePath == "" {
 		c.CookiePath = defaultCookiePath
+	}
+	// v0.32.0: the session cookie joins the flow cookies under the prefix.
+	if c.CookieHostPrefix && !strings.HasPrefix(c.CookieName, cookieHostPrefix) {
+		c.CookieName = cookieHostPrefix + c.CookieName
 	}
 	if len(c.Scopes) == 0 {
 		c.Scopes = []string{scopeOpenID, scopeProfile, scopeEmail}
@@ -495,6 +552,30 @@ func (c *Config) validate() ([]byte, error) {
 				"ReresolveOnRevalidate is set but UserResolver is nil: there is nothing to re-resolve: %w",
 				ErrInvalidConfig)
 		}
+	}
+
+	// Validate the `__Host-` prefix (v0.32.0). A browser silently DROPS a
+	// `__Host-` cookie that is not Secure or not Path=/ — the config would
+	// parse, New() would succeed, and every login would end at LogoutRedirect
+	// with nothing in any log. Refuse it at boot instead.
+	if c.CookieHostPrefix {
+		if c.InsecureCookie {
+			return nil, fmt.Errorf(
+				"CookieHostPrefix requires Secure cookies but InsecureCookie is true: browsers refuse a %s cookie without Secure: %w",
+				cookieHostPrefix, ErrInvalidConfig)
+		}
+		if c.CookiePath != defaultCookiePath {
+			return nil, fmt.Errorf(
+				"CookieHostPrefix requires CookiePath %q, got %q: browsers refuse a %s cookie with any other Path: %w",
+				defaultCookiePath, c.CookiePath, cookieHostPrefix, ErrInvalidConfig)
+		}
+	} else if strings.HasPrefix(c.CookieName, cookieHostPrefix) && (c.InsecureCookie || c.CookiePath != defaultCookiePath) {
+		// A hand-prefixed CookieName predates the option; warn rather than
+		// refuse so an upgrade never becomes a boot failure.
+		c.Logger.Warn(logMsgHostPrefixNameUnsatisfiable,
+			slog.String(logKeyComponent, logComponent),
+			slog.String(logKeyCookieName, c.CookieName),
+		)
 	}
 
 	// Warn on insecure config (http callback without InsecureCookie).
