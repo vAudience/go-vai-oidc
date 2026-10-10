@@ -75,6 +75,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"html"
 	"log/slog"
@@ -117,9 +118,9 @@ func (a *Auth) handleSessionSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	setOIDCCookie(w, cookieOIDCState, state, a.cfg.CookiePath, a.cfg.secureCookie())
-	setOIDCCookie(w, cookiePKCEVerifier, verifier, a.cfg.CookiePath, a.cfg.secureCookie())
-	setOIDCCookie(w, cookieOIDCSync, cookieSyncMarkerValue, a.cfg.CookiePath, a.cfg.secureCookie())
+	setOIDCCookie(w, a.cfg.flowCookieName(cookieOIDCState), state, a.cfg.CookiePath, a.cfg.secureCookie())
+	setOIDCCookie(w, a.cfg.flowCookieName(cookiePKCEVerifier), verifier, a.cfg.CookiePath, a.cfg.secureCookie())
+	setOIDCCookie(w, a.cfg.flowCookieName(cookieOIDCSync), cookieSyncMarkerValue, a.cfg.CookiePath, a.cfg.secureCookie())
 
 	// ⛔ `prompt=none` is the whole safety property of running this in an iframe.
 	// Without it Keycloak renders its login page into a frame the user cannot
@@ -146,13 +147,18 @@ func (a *Auth) handleSessionSync(w http.ResponseWriter, r *http.Request) {
 func (a *Auth) handleSyncCallback(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set(headerCacheControl, cacheControlNoStore)
 
-	stateCookie, stateErr := r.Cookie(cookieOIDCState)
-	pkceCookie, pkceErr := r.Cookie(cookiePKCEVerifier)
+	stateCookie, stateErr := uniqueCookie(r, a.cfg.flowCookieName(cookieOIDCState))
+	pkceCookie, pkceErr := uniqueCookie(r, a.cfg.flowCookieName(cookiePKCEVerifier))
 
-	clearOIDCCookie(w, cookieOIDCState, a.cfg.CookiePath, a.cfg.secureCookie())
-	clearOIDCCookie(w, cookiePKCEVerifier, a.cfg.CookiePath, a.cfg.secureCookie())
-	clearOIDCCookie(w, cookieOIDCSync, a.cfg.CookiePath, a.cfg.secureCookie())
+	clearOIDCCookie(w, a.cfg.flowCookieName(cookieOIDCState), a.cfg.CookiePath, a.cfg.secureCookie())
+	clearOIDCCookie(w, a.cfg.flowCookieName(cookiePKCEVerifier), a.cfg.CookiePath, a.cfg.secureCookie())
+	clearOIDCCookie(w, a.cfg.flowCookieName(cookieOIDCSync), a.cfg.CookiePath, a.cfg.secureCookie())
 
+	// v0.32.0: a tossed duplicate is refused like a missing cookie, but named.
+	if errors.Is(stateErr, errDuplicateCookie) || errors.Is(pkceErr, errDuplicateCookie) {
+		a.syncFailOpen(w, logReasonSyncFlowCookieDuplicate, errors.Join(stateErr, pkceErr))
+		return
+	}
 	if stateErr != nil || pkceErr != nil {
 		a.syncFailOpen(w, "sync callback: missing state or PKCE cookie", nil)
 		return

@@ -554,6 +554,46 @@ skip := auth.SkipPathsWithPrefix("/deepr/auth")
   served at — both lose `/deepr` if the upstream sees `/…` and send the browser to the wrong product.
   Serve the application under the prefix end to end.
 
+## Sibling hosts and cookie tossing — `CookieHostPrefix` (v0.32.0)
+
+Cookies are scoped by **site**, not origin. If your login host is `auth.example.com` and
+`example.com` is not on the [Public Suffix List](https://publicsuffix.org/), every other
+`*.example.com` host is the same site and can set a cookie with `Domain=example.com` that the
+browser sends to your callback. A hostile sibling (e.g. a user-content host) can plant its **own**
+state + PKCE verifier and navigate the victim to `/auth/callback?code=<its code>&state=<its state>`
+— a login CSRF that signs the victim into the attacker's account.
+
+```go
+vaioidc.Config{
+    CookieHostPrefix:       true, // every cookie becomes __Host-…: Secure, Path=/, no Domain
+    RejectSameSiteCallback: true, // optional extra; read the caveat below first
+    // …
+}
+```
+
+- **`CookieHostPrefix`** prefixes every cookie the package sets — `__Host-vai_oidc_state`,
+  `__Host-vai_pkce_verifier`, `__Host-vai_oidc_sync`, `__Host-vai_oidc_max_age`, and the session
+  cookie (`CookieName` gains the prefix unless it already has it, chunks included). Browsers refuse
+  a `__Host-` cookie that carries a `Domain`, so a sibling cannot plant one. `New()` **refuses**
+  it together with `InsecureCookie` or a `CookiePath` other than `/`, because the browser would
+  drop every cookie silently. ⚠️ Enabling it renames the session cookie: existing sessions are
+  signed out once. It does not fit the path-prefix portal pattern below (`CookiePath "/<product>"`).
+- **Duplicate refusal (always on).** A callback carrying two cookies named like the state, the
+  verifier or the step-up `max_age` marker is refused like a missing one (redirect to
+  `LogoutRedirect`; a sync callback reports `error`). Which duplicate a browser sends first is the
+  planting party's choice, so the package never reads "the first". This only helps when a genuine
+  login is in flight; `CookieHostPrefix` is the fix.
+- **`RejectSameSiteCallback`** refuses a callback whose `Sec-Fetch-Site` is `same-site` or
+  `same-origin` (a genuine callback is a redirect from the IdP: `cross-site`). A request without the
+  header is let through. ⛔ Do not enable it when the IdP is same-site with your callback
+  (`keycloak.example.com` → `app.example.com`): every login would fail. Defence in depth only — a
+  cross-site open redirect launders the header.
+- The state is compared in constant time; the IdP binds the code to the PKCE challenge, so a
+  verifier from another login cannot redeem it.
+
+The longer-term fix is still to put the parent domain on the PSL; the prefix is what protects you
+until then (and afterwards).
+
 ## UserResolver — enrich or reject at login
 
 `UserResolver` runs during the callback, after the ID token is verified and before the cookie is
@@ -654,6 +694,11 @@ vaioidc.Config{
     CookieName           string        // (default "vai_session")
     CookiePath           string        // (default "/")
     InsecureCookie       bool          // allow cookies over plain http:// (dev only; default false)
+    CookieHostPrefix     bool          // __Host- prefix on every cookie (v0.32.0; default false).
+                                       // ⛔ New() refuses it with InsecureCookie or CookiePath != "/".
+                                       // See "Sibling hosts and cookie tossing" above.
+    RejectSameSiteCallback bool        // refuse callbacks with Sec-Fetch-Site same-site|same-origin
+                                       // (v0.32.0; default false). ⛔ Not with a same-site IdP.
     Scopes               []string      // (default [openid, profile, email])
     ExtraClaims          []string      // extra ID-token claims → User.Claims
     UserResolver         UserResolver  // enrich/reject at login

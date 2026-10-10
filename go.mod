@@ -2,11 +2,12 @@ module github.com/vAudience/go-vai-oidc
 
 go 1.25.0
 
-// Build with a patched 1.25.x that clears the current stdlib advisories
+// Build with a patched toolchain that clears the current stdlib advisories
 // (govulncheck-clean). This does NOT raise the consumer floor — the `go`
 // directive above stays at 1.25.0 — it only selects the toolchain that builds
-// this module.
-toolchain go1.25.13
+// this module. v0.32.0: 1.26.9, because the 1.25 line has no fix for the
+// GO-2026-66xx net/http, net/textproto and crypto/tls advisories.
+toolchain go1.26.9
 
 require (
 	github.com/coreos/go-oidc/v3 v3.18.0

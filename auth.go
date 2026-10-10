@@ -575,16 +575,16 @@ func (a *Auth) handleLogin(w http.ResponseWriter, r *http.Request) {
 		stateValue = state + stateCookieDelimiter + redirect
 	}
 
-	setOIDCCookie(w, cookieOIDCState, stateValue, a.cfg.CookiePath, a.cfg.secureCookie())
-	setOIDCCookie(w, cookiePKCEVerifier, verifier, a.cfg.CookiePath, a.cfg.secureCookie())
+	setOIDCCookie(w, a.cfg.flowCookieName(cookieOIDCState), stateValue, a.cfg.CookiePath, a.cfg.secureCookie())
+	setOIDCCookie(w, a.cfg.flowCookieName(cookiePKCEVerifier), verifier, a.cfg.CookiePath, a.cfg.secureCookie())
 	if maxAgeRequested {
 		// The callback must know max_age was asked for (auth_time becomes
 		// REQUIRED) and when the login started (the bound is measured from it).
-		setOIDCCookie(w, cookieOIDCMaxAge, maxAgeCookieValue(maxAge, time.Now().UTC()), a.cfg.CookiePath, a.cfg.secureCookie())
+		setOIDCCookie(w, a.cfg.flowCookieName(cookieOIDCMaxAge), maxAgeCookieValue(maxAge, time.Now().UTC()), a.cfg.CookiePath, a.cfg.secureCookie())
 	} else {
 		// A stale marker from an abandoned step-up must not make this ordinary
 		// login demand auth_time.
-		clearOIDCCookie(w, cookieOIDCMaxAge, a.cfg.CookiePath, a.cfg.secureCookie())
+		clearOIDCCookie(w, a.cfg.flowCookieName(cookieOIDCMaxAge), a.cfg.CookiePath, a.cfg.secureCookie())
 	}
 
 	// v0.5.0: forward selected query params from /auth/login to
@@ -634,17 +634,60 @@ func authCodeExtras(r *http.Request) map[string]string {
 // realm client in this fleet registers an EXACT redirect URI — see
 // cookieOIDCSync for why a second registered URI was refused as a cost.
 func (a *Auth) handleCallback(w http.ResponseWriter, r *http.Request) {
-	if _, err := r.Cookie(cookieOIDCSync); err == nil {
+	_, syncErr := r.Cookie(a.cfg.flowCookieName(cookieOIDCSync))
+	isSync := syncErr == nil
+
+	// v0.32.0: opt-in refusal of a callback the browser says a same-site page
+	// navigated to. Nothing is cleared, so a genuine login in flight survives
+	// the attacker's attempt.
+	if a.cfg.RejectSameSiteCallback && isSameSiteNavigation(r) {
+		if isSync {
+			w.Header().Set(headerCacheControl, cacheControlNoStore)
+			a.syncFailOpen(w, logReasonSyncSameSiteCallback, nil)
+			return
+		}
+		a.logger.Warn(logMsgSameSiteCallback,
+			slog.String(logKeyComponent, logComponent),
+			slog.String(logKeySecFetchSite, r.Header.Get(headerSecFetchSite)),
+			slog.String(logKeyClientIP, clientIP(r)),
+		)
+		http.Redirect(w, r, a.cfg.LogoutRedirect, http.StatusFound)
+		return
+	}
+
+	if isSync {
 		a.handleSyncCallback(w, r)
 		return
 	}
 	a.handleLoginCallback(w, r)
 }
 
+// refuseDuplicateFlowCookies logs a tossed duplicate, clears this host's own
+// flow cookies (a cookie planted on a parent domain cannot be cleared from
+// here, which is why CookieHostPrefix is the fix) and ends the login at
+// LogoutRedirect — the existing refusal path.
+func (a *Auth) refuseDuplicateFlowCookies(w http.ResponseWriter, r *http.Request, err error) {
+	a.logger.Warn(logMsgFlowCookieDuplicate,
+		slog.String(logKeyComponent, logComponent),
+		slog.String(logKeyError, err.Error()),
+		slog.String(logKeyClientIP, clientIP(r)),
+	)
+	clearOIDCCookie(w, a.cfg.flowCookieName(cookieOIDCState), a.cfg.CookiePath, a.cfg.secureCookie())
+	clearOIDCCookie(w, a.cfg.flowCookieName(cookiePKCEVerifier), a.cfg.CookiePath, a.cfg.secureCookie())
+	clearOIDCCookie(w, a.cfg.flowCookieName(cookieOIDCMaxAge), a.cfg.CookiePath, a.cfg.secureCookie())
+	http.Redirect(w, r, a.cfg.LogoutRedirect, http.StatusFound)
+}
+
 // handleLoginCallback is the authorization-code callback that MINTS a session.
 func (a *Auth) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 	// Read and clear OIDC cookies immediately.
-	stateCookie, err := r.Cookie(cookieOIDCState)
+	// v0.32.0: uniqueCookie, not r.Cookie — a second cookie of the same name is
+	// a tossed one, and r.Cookie would read whichever the browser sent first.
+	stateCookie, err := uniqueCookie(r, a.cfg.flowCookieName(cookieOIDCState))
+	if errors.Is(err, errDuplicateCookie) {
+		a.refuseDuplicateFlowCookies(w, r, err)
+		return
+	}
 	if err != nil {
 		a.logger.Warn("OIDC callback: missing state cookie",
 			slog.String(logKeyComponent, logComponent),
@@ -654,7 +697,11 @@ func (a *Auth) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pkceCookie, err := r.Cookie(cookiePKCEVerifier)
+	pkceCookie, err := uniqueCookie(r, a.cfg.flowCookieName(cookiePKCEVerifier))
+	if errors.Is(err, errDuplicateCookie) {
+		a.refuseDuplicateFlowCookies(w, r, err)
+		return
+	}
 	if err != nil {
 		a.logger.Warn("OIDC callback: missing PKCE cookie",
 			slog.String(logKeyComponent, logComponent),
@@ -664,11 +711,11 @@ func (a *Auth) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	clearOIDCCookie(w, cookieOIDCState, a.cfg.CookiePath, a.cfg.secureCookie())
-	clearOIDCCookie(w, cookiePKCEVerifier, a.cfg.CookiePath, a.cfg.secureCookie())
+	clearOIDCCookie(w, a.cfg.flowCookieName(cookieOIDCState), a.cfg.CookiePath, a.cfg.secureCookie())
+	clearOIDCCookie(w, a.cfg.flowCookieName(cookiePKCEVerifier), a.cfg.CookiePath, a.cfg.secureCookie())
 	// v0.28.0: the max_age marker is read below (the request still carries it)
 	// and cleared here with the others, so no later login inherits it.
-	clearOIDCCookie(w, cookieOIDCMaxAge, a.cfg.CookiePath, a.cfg.secureCookie())
+	clearOIDCCookie(w, a.cfg.flowCookieName(cookieOIDCMaxAge), a.cfg.CookiePath, a.cfg.secureCookie())
 
 	// Parse state: "state" or "state|redirect".
 	storedState, storedRedirect := parseStateCookie(stateCookie.Value)
