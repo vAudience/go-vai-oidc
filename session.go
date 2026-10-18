@@ -1,6 +1,7 @@
 package vaioidc
 
 import (
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -212,7 +213,8 @@ func decryptSession(encoded string, key []byte) (*sessionPayload, error) {
 // from a previously larger session). Without chunking, an oversized cookie is
 // silently dropped by the browser, leaving the user in an endless login loop.
 //
-// logger may be nil; when non-nil it warns once when a session is chunked.
+// logger may be nil; when non-nil a chunked write is logged at DEBUG, or at WARN
+// from sessionChunkWarnAt chunks (chunkLogLevel).
 func setSessionCookie(w http.ResponseWriter, payload *sessionPayload, key []byte, cookieName, cookiePath string, secure bool, logger *slog.Logger) error {
 	encrypted, err := encryptSession(payload, key)
 	if err != nil {
@@ -234,7 +236,7 @@ func setSessionCookie(w http.ResponseWriter, payload *sessionPayload, key []byte
 			len(encrypted), n, maxSessionCookieChunks, ErrSessionInvalid)
 	}
 	if logger != nil {
-		logger.Warn(logMsgCookieLarge,
+		logger.Log(context.Background(), chunkLogLevel(n), logMsgCookieLarge,
 			slog.String(logKeyComponent, logComponent),
 			slog.Int(logKeyCookieBytes, len(encrypted)),
 			slog.Int(logKeyCookieChunks, n),
@@ -359,4 +361,13 @@ func clearOIDCCookie(w http.ResponseWriter, name, path string, secure bool) {
 		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 	})
+}
+
+// chunkLogLevel is the level a chunked session write is logged at: DEBUG for the
+// ordinary case, WARN once the session nears maxSessionCookieChunks.
+func chunkLogLevel(chunks int) slog.Level {
+	if chunks >= sessionChunkWarnAt {
+		return slog.LevelWarn
+	}
+	return slog.LevelDebug
 }

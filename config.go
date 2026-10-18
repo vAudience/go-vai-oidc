@@ -144,8 +144,9 @@ type Config struct {
 	//
 	// TRADE-OFF: retaining both tokens adds ~2–4 KB (encrypted+base64) to the
 	// session cookie on top of the id_token. Combined with a large id_token
-	// this can approach the ~4 KB per-cookie browser limit; New() logs a
-	// warning when a written session cookie crosses CookieSizeWarnThreshold.
+	// this can approach the ~4 KB per-cookie browser limit; a session above
+	// CookieSizeWarnThreshold is split across chunked cookies (logged at DEBUG,
+	// at WARN once it nears the chunk cap).
 	// For long-lived refresh that survives Keycloak SSO logout, add
 	// "offline_access" to Scopes; otherwise the refresh token is valid only
 	// while the Keycloak SSO session lives.
