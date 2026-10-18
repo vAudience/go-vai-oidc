@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.33.0 — 2026-10-18
+
+**A chunked session write logs at DEBUG; WARN only near the chunk cap.** Additive: no API, cookie or
+configuration change.
+
+A session that retains tokens is routinely larger than one cookie — every write of an aigentverse
+session on styx is ~5.2 KB in 2 chunks — so the WARN `session exceeds the single-cookie limit` fired on
+every session write (376 lines in four hours of one service's log) and said nothing an operator could act
+on. Chunking itself works as designed (v0.13.0).
+
+- A chunked write now logs that message at **DEBUG**, with the same `cookie_bytes` / `cookie_chunks`.
+- From **`maxSessionCookieChunks / 2` = 4 chunks** (~14 KB) it logs at **WARN**: the session is growing
+  towards the 8-chunk cap, where the write is refused.
+- The doc comments of `CookieSizeWarnThreshold` and `Config.RetainTokens` say so; the threshold's value is
+  unchanged.
+
 ## v0.32.0 — 2026-10-10
 
 **Cookie-tossing hardening: `__Host-` cookies, duplicate refusal, same-site callback refusal**

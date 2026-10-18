@@ -99,8 +99,8 @@ const (
 )
 
 // CookieSizeWarnThreshold is the encoded session-cookie size (bytes) above
-// which setSessionCookie splits the session across multiple cookies and logs a
-// warning. Browsers cap a single cookie at ~4096 bytes; retaining Keycloak
+// which setSessionCookie splits the session across multiple cookies (logged at
+// DEBUG, and at WARN from sessionChunkWarnAt chunks, v0.33.0). Browsers cap a single cookie at ~4096 bytes; retaining Keycloak
 // access+refresh tokens (Config.RetainTokens) can exceed that. The threshold
 // leaves headroom for the cookie name + attributes (v0.12.0).
 const CookieSizeWarnThreshold = 3500
@@ -120,6 +120,14 @@ const (
 	// pathologically large session (8 × maxCookieValueBytes ≈ 28KB of encrypted
 	// payload, far beyond any legitimate token set).
 	maxSessionCookieChunks = 8
+
+	// sessionChunkWarnAt is the chunk count from which a chunked write logs at
+	// WARN (v0.33.0). Below it chunking is the ordinary state of a session that
+	// retains tokens — two chunks on every write of a styx session, measured at
+	// ~5.2 KB — and logs at DEBUG, because a warning that fires on every request
+	// is read by nobody. Half of maxSessionCookieChunks leaves room to notice a
+	// session growing towards the cap, where the write is REFUSED.
+	sessionChunkWarnAt = maxSessionCookieChunks / 2
 
 	// chunkCountPrefix marks the base cookie as a chunk header ("chunked:N")
 	// rather than the encrypted payload itself. The payload is base64url-encoded
