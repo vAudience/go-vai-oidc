@@ -690,6 +690,10 @@ vaioidc.Config{
                                        // under a prefix, and silently landed administrators on
                                        // the public marketing homepage for a service that
                                        // serves one at "/".
+    LandingReturnPath    func(string) string // v0.34.0: the path a landing (onboarding, org
+                                       // selection) returns through, given the login's target —
+                                       // e.g. a door that re-asks the backend so the chooser's
+                                       // pick is seated. Unsafe answers are ignored; nil = old.
     SessionTTL           time.Duration // cookie lifetime (default 24h)
     CookieName           string        // (default "vai_session")
     CookiePath           string        // (default "/")

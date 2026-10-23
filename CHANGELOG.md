@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.34.0 — 2026-10-23
+
+**`Config.LandingReturnPath`: a landing can return through the consumer's own door.** Additive: nil keeps
+every redirect byte-for-byte what v0.33.0 sent.
+
+### The gap
+
+When the identity backend answers a login with a redirecting landing (obol's org chooser for a person in
+several organisations), the callback has already seated the session in the organisation the backend listed
+first, and `consumer_return_to` named the login's own target. Two failures followed, both measured on
+aigentverse (varuul, 2026-10-23):
+
+- **A plain sign-in carried no return at all.** With no deep link the target is `/`, which
+  `consumerReturnTo` deliberately drops, so obol's chooser exited to obol's own dashboard and the person
+  never came back to the service they signed into.
+- **A deep link came back without the pick.** The chooser returned straight to the target, so the session
+  still held the pre-choice organisation.
+
+### The option
+
+`LandingReturnPath func(target string) string` is asked for the path to return through, with the login's
+target (the deep link, else `PostLoginRedirect`, `/` included). Its answer must be a safe relative path
+(`isValidRedirect`); anything else is ignored and the target is carried as before. aigentverse passes
+`/auth/reseat?return_to=<target>`, the door that re-asks obol and seats the pick.
+
+### Also
+
+- **Build toolchain `go1.26.9` → `go1.26.10`** (`go.mod` `toolchain`; the `go 1.25.0` consumer floor is
+  unchanged): clears GO-2026-6809 (crypto/x509 distrusts compromised intermediates), which `make vuln`
+  reported on v0.33.0's tree.
+
 ## v0.33.0 — 2026-10-18
 
 **A chunked session write logs at DEBUG; WARN only near the chunk cap.** Additive: no API, cookie or

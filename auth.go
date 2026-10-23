@@ -869,7 +869,7 @@ func (a *Auth) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 	// nil decision, an unrecognised one, and one that wants a redirect but names
 	// no URL all leave this login ending exactly where it used to.
 	if landingURL, ok := user.Landing.RedirectTarget(); ok {
-		if returnTo := a.consumerReturnTo(target); returnTo != "" {
+		if returnTo := a.landingConsumerReturnTo(target); returnTo != "" {
 			landingURL = appendQueryParam(landingURL, queryParamConsumerReturnTo, returnTo)
 		}
 		a.logger.Info(logMsgLandingRedirect,
@@ -941,6 +941,21 @@ func (a *Auth) consumerReturnTo(target string) string {
 		return ""
 	}
 	return base.Scheme + "://" + base.Host + target
+}
+
+// landingConsumerReturnTo is the `consumer_return_to` a redirecting landing
+// carries: Config.LandingReturnPath's path when it is set and safe, else the
+// login's own target (v0.34.0). Every arm that cannot use the hook's answer
+// falls back to the pre-v0.34.0 value, never to nothing.
+func (a *Auth) landingConsumerReturnTo(target string) string {
+	if a.cfg.LandingReturnPath != nil {
+		if p := a.cfg.LandingReturnPath(target); isValidRedirect(p) {
+			if returnTo := a.consumerReturnTo(p); returnTo != "" {
+				return returnTo
+			}
+		}
+	}
+	return a.consumerReturnTo(target)
 }
 
 // appendQueryParam adds one query parameter to an absolute URL, preserving any
