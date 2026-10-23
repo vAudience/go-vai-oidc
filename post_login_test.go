@@ -139,6 +139,40 @@ func TestConsumerReturnTo(t *testing.T) {
 	}
 }
 
+// TestLandingConsumerReturnTo covers v0.34.0's LandingReturnPath: the hook's
+// path wins when it is safe, including for the bare "/" that otherwise carries
+// no return at all, and every unusable answer falls back to the old value.
+func TestLandingConsumerReturnTo(t *testing.T) {
+	const callback = "https://svc.example.com/auth/callback"
+	via := func(target string) string { return "/auth/reseat?return_to=" + url.QueryEscape(target) }
+	cases := []struct {
+		name   string
+		hook   func(string) string
+		target string
+		want   string
+	}{
+		{"no hook keeps the target", nil, "/reports/42", "https://svc.example.com/reports/42"},
+		{"no hook and no deep link carries nothing", nil, "/", ""},
+		{"the hook routes a deep link through its door", via, "/reports/42",
+			"https://svc.example.com/auth/reseat?return_to=%2Freports%2F42"},
+		{"the hook is asked for the bare root too", via, "/",
+			"https://svc.example.com/auth/reseat?return_to=%2F"},
+		{"an absolute hook answer is ignored", func(string) string { return "https://evil.example.com/x" },
+			"/reports/42", "https://svc.example.com/reports/42"},
+		{"a protocol-relative hook answer is ignored", func(string) string { return "//evil.example.com/x" },
+			"/reports/42", "https://svc.example.com/reports/42"},
+		{"an empty hook answer is ignored", func(string) string { return "" }, "/", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &Auth{cfg: Config{CallbackURL: callback, LandingReturnPath: tc.hook}}
+			if got := a.landingConsumerReturnTo(tc.target); got != tc.want {
+				t.Errorf("landingConsumerReturnTo(%q) = %q, want %q", tc.target, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestAppendQueryParam covers the join, including the case that made a naive
 // string concatenation wrong.
 func TestAppendQueryParam(t *testing.T) {

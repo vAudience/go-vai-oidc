@@ -73,6 +73,26 @@ type Config struct {
 	// particular to go.
 	PostLoginRedirect string
 
+	// LandingReturnPath, when set, chooses the path the identity backend is
+	// asked to send the browser back to after its landing flow (onboarding,
+	// org selection, …), instead of the login's own post-login target (v0.34.0).
+	// It receives that target — the deep link, else PostLoginRedirect — and
+	// returns a relative path on this service; the library makes it absolute
+	// from CallbackURL and carries it as `consumer_return_to`, as before.
+	//
+	// ⚠️ WHY IT EXISTS: the callback seats the session in whatever organisation
+	// the backend answered BEFORE the person chose one, and the chooser then
+	// returns straight to the target, so the pick never reaches the session. A
+	// consumer with a door that re-asks the backend (aigentverse's
+	// /auth/reseat?return_to=…) routes the return through it. And without a deep
+	// link the target is "/", which carries no return at all: the person is left
+	// on the identity backend's own dashboard. The hook is called for "/" too.
+	//
+	// ⚠️ A RESULT THAT IS NOT A SAFE RELATIVE PATH (isValidRedirect's rule) IS
+	// IGNORED and the login's own target is carried instead, because the value
+	// is handed to another origin. nil keeps the pre-v0.34.0 behaviour exactly.
+	LandingReturnPath func(target string) string
+
 	// Optional: Session.
 	SessionTTL     time.Duration // Session cookie lifetime (default: 24h)
 	CookieName     string        // Session cookie name (default: "vai_session")
