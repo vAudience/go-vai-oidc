@@ -110,6 +110,17 @@ type IdentityEnsureRequest struct {
 	// code), which obol reads as it always has. An older obol's decoder ignores
 	// the unknown field, so sending it is safe ahead of the obol rollout.
 	Admission vaioidc.Admission `json:"admission,omitempty"`
+	// EmailVerified forwards vaioidc.User.EmailVerified — the identity
+	// provider's `email_verified` claim (v0.36.0, obol#497, obol ADR-502).
+	// obol >= 3.498.0 auto-accepts pending org invitations at ensure ONLY when
+	// this is present and true: an invitation is a grant keyed on the ADDRESS,
+	// so an unverified address (or an nOAuth-style IdP that lets a user claim
+	// any email) must not take it. ⚠️ Never defaulted to true — it is exactly
+	// the token's claim, and a session minted before v0.24.0 decodes false.
+	// Sent explicitly (no omitempty) so "the IdP said unverified" reaches obol
+	// as false rather than looking like a pre-v0.36.0 caller; obol treats false
+	// and absent alike (fail closed). An older obol's decoder ignores the field.
+	EmailVerified bool `json:"email_verified"`
 }
 
 // IdentityEnsureMembership mirrors obol's per-membership response
@@ -217,6 +228,8 @@ func New(cfg Config) vaioidc.UserResolver {
 			Name:  user.Name,
 			// "" (omitted) unless the library built ctx — see the field.
 			Admission: vaioidc.AdmissionFromContext(ctx),
+			// The token's claim, never a default — see the field.
+			EmailVerified: user.EmailVerified,
 		})
 		if mErr != nil {
 			return nil, fmt.Errorf("obolresolver: marshal request: %w", mErr)
@@ -382,7 +395,7 @@ const headerObolClientVersion = "X-Obol-Client-Version"
 // module, which cannot carry it at all. So the honest answer to "which code
 // composed this request" is a version string this file owns, and it must be
 // bumped with versions.yaml (TestClientVersionMatchesTheManifest pins it).
-const ClientVersion = "go-vai-oidc/0.35.0"
+const ClientVersion = "go-vai-oidc/0.36.0"
 
 // admitLanding turns obol's landing object into a value the callback may act
 // on, or nil.

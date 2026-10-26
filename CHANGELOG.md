@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.36.0 — 2026-10-27
+
+**obol#497 — invitations auto-accept only for a verified address.** `obolresolver` now forwards the session's
+`email_verified` to obol's `/api/v1/identity/ensure`. Additive on the wire.
+
+- `obolresolver.IdentityEnsureRequest` gains `EmailVerified bool` (`json:"email_verified"`), set from
+  `vaioidc.User.EmailVerified` — the ID token's `email_verified` claim (carried since v0.24.0). It is exactly
+  the claim, **never defaulted to true**; a session minted before v0.24.0 decodes false.
+- obol 3.498.0 (ADR-502) auto-accepts pending org invitations at ensure ONLY on an explicit
+  `"email_verified": true` — an invitation is a grant keyed on the ADDRESS, so an unverified (or nOAuth-style
+  claimed) address must not take it. obol reads absent and false alike (fail closed); this module sends the key
+  explicitly, so an unverified session arrives as `false`, distinguishable from a pre-v0.36.0 caller.
+- **Without this version, obol ≥ 3.498.0 auto-accepts no invitation at sign-in**: an invited person accepts on
+  obol's invite page instead (one click). An older obol ignores the field, so the bump is safe ahead of obol.
+- **Guard:** `TestEnsureBodyCarriesEmailVerified` reads the RAW ensure body for a verified, an unverified and a
+  zero-value user (proven by forcing the field to `true`: the unverified arms go red).
+- `obolresolver.ClientVersion` → `go-vai-oidc/0.36.0`.
+
 ## v0.35.0 — 2026-10-26
 
 **`Membership.SecurityOfficer`: obol's per-org information-security-officer designation rides the session**
