@@ -239,6 +239,21 @@ type Membership struct {
 	// user's teams" without saying which org would hand org A's delegation org B's
 	// teams. Use User.TeamIDsForOrg rather than reaching into this slice.
 	TeamIDs []string `json:"team_ids,omitempty"`
+
+	// SecurityOfficer reports that the identity backend designates this user as
+	// the information-security officer of THIS org (obol 3.495.0 /
+	// /identity/ensure `security_officer`, obol#485, atlas#984; v0.35.0). It is
+	// orthogonal to Role: an owner, an admin or a plain member can hold it.
+	//
+	// ⚠ FALSE IS ALSO "NOT SAID". An older obol emits no key and that decodes to
+	// false, deliberately — the designation grants something, so its absence must
+	// fail CLOSED. A consumer must never read false as "obol says this person is
+	// not the officer" when deciding to revoke something it granted elsewhere.
+	//
+	// omitempty keeps the session cookie byte-identical for every membership that
+	// is not designated: only a true value costs bytes (`,"security_officer":true`,
+	// 24 bytes before encryption + base64).
+	SecurityOfficer bool `json:"security_officer,omitempty"`
 }
 
 // TeamIDsForOrg returns the user's active team ids within orgID, or nil when the

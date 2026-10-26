@@ -125,6 +125,10 @@ type IdentityEnsureMembership struct {
 	// two decode the same into a nil slice, which is why no consumer may read nil
 	// as an authoritative "no teams".
 	TeamIDs []string `json:"team_ids,omitempty"`
+	// SecurityOfficer is obol's per-membership information-security-officer
+	// designation (obol 3.495.0, obol#485). An older obol omits the key, which
+	// decodes to false: the designation fails CLOSED.
+	SecurityOfficer bool `json:"security_officer,omitempty"`
 }
 
 // IdentityEnsureLanding mirrors obol's landing DECISION (obol 3.185.0 /
@@ -341,11 +345,12 @@ func toVaiMemberships(in []IdentityEnsureMembership) []vaioidc.Membership {
 	out := make([]vaioidc.Membership, 0, len(in))
 	for _, m := range in {
 		out = append(out, vaioidc.Membership{
-			OrgID:   m.OrgID,
-			OrgName: m.OrgName,
-			OrgSlug: m.OrgSlug,
-			Role:    m.Role,
-			TeamIDs: m.TeamIDs,
+			OrgID:           m.OrgID,
+			OrgName:         m.OrgName,
+			OrgSlug:         m.OrgSlug,
+			Role:            m.Role,
+			TeamIDs:         m.TeamIDs,
+			SecurityOfficer: m.SecurityOfficer,
 		})
 	}
 	return out
@@ -377,7 +382,7 @@ const headerObolClientVersion = "X-Obol-Client-Version"
 // module, which cannot carry it at all. So the honest answer to "which code
 // composed this request" is a version string this file owns, and it must be
 // bumped with versions.yaml (TestClientVersionMatchesTheManifest pins it).
-const ClientVersion = "go-vai-oidc/0.34.0"
+const ClientVersion = "go-vai-oidc/0.35.0"
 
 // admitLanding turns obol's landing object into a value the callback may act
 // on, or nil.
