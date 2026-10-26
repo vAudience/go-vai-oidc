@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.35.0 — 2026-10-26
+
+**`Membership.SecurityOfficer`: obol's per-org information-security-officer designation rides the session**
+(atlas#984 / obol#485). Additive: a session without a designated membership encodes byte-for-byte as v0.34.0's.
+
+- `vaioidc.Membership` gains `SecurityOfficer bool` (`json:"security_officer,omitempty"`), and
+  `obolresolver.IdentityEnsureMembership` the same field, copied by `toVaiMemberships`. obol 3.495.0 (ADR-499)
+  emits `security_officer` on every `/api/v1/identity/ensure` membership row; atlas reads it per org from the
+  browser session (`membershipFor`).
+- **Absent means false — fail CLOSED.** An older obol emits no key and every session minted before v0.35.0
+  carries none; both decode to false. ⚠ false is therefore also "not said", never "obol says not the officer".
+- **Cookie cost: zero unless designated.** `omitempty` keeps a non-designated membership's encoding unchanged;
+  a designated one adds `,"security_officer":true` (24 bytes of JSON, ~32 after AES-GCM + base64) — at most once
+  per org, far inside the 3,500-byte chunk size and the 8-chunk cap.
+- **Guards:** a session-cookie round trip with two orgs of opposite value; the absent-key decode; the
+  zero-cost encoding; and `TestToVaiMemberships_CopiesEveryField`, a reflection inventory that fails when a
+  field of obol's membership row has no same-tagged twin on `vaioidc.Membership` or is not copied (proven by
+  deleting the copy line).
+- `obolresolver.ClientVersion` → `go-vai-oidc/0.35.0`.
+
 ## v0.34.0 — 2026-10-23
 
 **`Config.LandingReturnPath`: a landing can return through the consumer's own door.** Additive: nil keeps

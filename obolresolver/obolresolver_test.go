@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -294,5 +295,79 @@ func TestNew_AbsentTeamIDsStayNil(t *testing.T) {
 	}
 	if got := user.TeamIDsForOrg("org-alpha"); got != nil {
 		t.Errorf("absent team_ids must stay nil, got %v", got)
+	}
+}
+
+// TestNew_SecurityOfficerRidesItsOwnMembership pins obol#485 / atlas#984's wire half:
+// obol 3.495.0 emits `security_officer` per membership row and the resolver must land
+// it on THAT org's membership — an absent key (an older obol) is false.
+func TestNew_SecurityOfficerRidesItsOwnMembership(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":{"user_id":"u1","memberships":[
+  {"org_id":"org-alpha","role":"member","security_officer":true},
+  {"org_id":"org-beta","role":"owner","security_officer":false},
+  {"org_id":"org-gamma","role":"admin"}
+]}}`)
+	}))
+	defer srv.Close()
+
+	r := New(Config{BaseURL: srv.URL, Client: srv.Client()})
+	user, err := r(context.Background(), &vaioidc.User{Sub: "u1"})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	want := map[string]bool{"org-alpha": true, "org-beta": false, "org-gamma": false}
+	if len(user.Memberships) != len(want) {
+		t.Fatalf("memberships = %+v", user.Memberships)
+	}
+	for _, m := range user.Memberships {
+		if m.SecurityOfficer != want[m.OrgID] {
+			t.Errorf("%s: SecurityOfficer = %v, want %v", m.OrgID, m.SecurityOfficer, want[m.OrgID])
+		}
+	}
+}
+
+// TestToVaiMemberships_CopiesEveryField is the field-inventory guard: every field of
+// obol's membership row must have a same-named, same-tagged field on vaioidc.Membership
+// AND be copied by toVaiMemberships. A field added to one side without the other —
+// or added to both and not copied — fails here rather than silently dropping on the
+// session (the v0.14.0 defect class, one hop earlier).
+func TestToVaiMemberships_CopiesEveryField(t *testing.T) {
+	src := reflect.TypeOf(IdentityEnsureMembership{})
+	dst := reflect.TypeOf(vaioidc.Membership{})
+	if src.NumField() != dst.NumField() {
+		t.Fatalf("IdentityEnsureMembership has %d fields, vaioidc.Membership %d — map the new one",
+			src.NumField(), dst.NumField())
+	}
+	in := IdentityEnsureMembership{}
+	iv := reflect.ValueOf(&in).Elem()
+	for i := 0; i < src.NumField(); i++ {
+		f := src.Field(i)
+		df, ok := dst.FieldByName(f.Name)
+		if !ok {
+			t.Fatalf("vaioidc.Membership has no field %s", f.Name)
+		}
+		if f.Tag.Get("json") != df.Tag.Get("json") {
+			t.Errorf("%s: json tag %q vs %q", f.Name, f.Tag.Get("json"), df.Tag.Get("json"))
+		}
+		switch f.Type.Kind() {
+		case reflect.String:
+			iv.Field(i).SetString("v-" + f.Name)
+		case reflect.Bool:
+			iv.Field(i).SetBool(true)
+		case reflect.Slice:
+			iv.Field(i).Set(reflect.ValueOf([]string{"v-" + f.Name}))
+		default:
+			t.Fatalf("%s: unhandled kind %s — extend this guard", f.Name, f.Type.Kind())
+		}
+	}
+	out := toVaiMemberships([]IdentityEnsureMembership{in})
+	ov := reflect.ValueOf(out[0])
+	for i := 0; i < src.NumField(); i++ {
+		name := src.Field(i).Name
+		if !reflect.DeepEqual(iv.Field(i).Interface(), ov.FieldByName(name).Interface()) {
+			t.Errorf("toVaiMemberships does not copy %s", name)
+		}
 	}
 }
