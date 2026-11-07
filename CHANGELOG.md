@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.37.1 — 2026-11-07
+
+**Security: `isValidRedirect` refused only the shapes that are dangerous BEFORE URL normalisation** (go-vai-oidc#30).
+`/auth/login?redirect=%2F%09%2Fevil.example.com` passed (`/\t/evil.example.com`), the tab survived into the post-login
+`Location` header, and browsers (WHATWG URL parsing strips ASCII tab, LF and CR) resolved it to `//evil.example.com`:
+an open redirect after login for every consumer. **Bump every consumer.**
+
+- `isValidRedirect` now accepts only a same-origin path: first byte `/`, second byte neither `/` nor `\`; no
+  backslash, no `://`, no control character (0x00-0x1F, 0x7F, C1) and no whitespace (incl. NBSP, U+2028) anywhere,
+  no invalid UTF-8; and `net/url` must parse it to no scheme, host, userinfo or opaque part with an escaped path
+  starting `/` and not `//`.
+- Percent-encoding is deliberately not decoded: `/auth/login` already decodes one layer through `Query().Get`
+  (so `%2F%09%2Fhost` arrives as `/\t/host` and is refused), and the value reaches `Location` verbatim, so a literal
+  `/%09/host` or `/%2F%2Fhost` is a path segment, not a tab or slash.
+- The callback re-validates the redirect read back from the state cookie (`postLoginTarget`); a stored value that
+  fails falls back to `PostLoginRedirect`. Covered call sites: `/auth/login`, `RequireSession` (both arms),
+  `unauthenticated`, `StepUpLoginURL`, `consumerReturnTo`, `landingConsumerReturnTo`, `postLoginTarget`.
+- **Guards:** `TestIsValidRedirect_SameOriginPathOnly`, `TestIsValidRedirect_DecodedQueryPayload`,
+  `TestPostLoginTarget_RevalidatesStoredRedirect`, `TestStepUpLoginURL_RefusesControlCharacters` (17 cases red on
+  v0.37.0).
+
 ## v0.37.0 — 2026-11-07
 
 **Per-flow state/PKCE cookies: two logins in flight in one browser both complete** (atlas#1084).

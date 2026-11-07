@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -890,7 +892,9 @@ func (a *Auth) handleLoginCallback(w http.ResponseWriter, r *http.Request, flow 
 // inline there is a decision nothing exercises — and a config field whose only
 // reader is unreachable from any test READS AS BUILT while doing nothing.
 func (a *Auth) postLoginTarget(storedRedirect string) string {
-	if storedRedirect != "" {
+	// The stored value rode a browser-held cookie: re-validate rather than
+	// trust that /auth/login did (go-vai-oidc#30).
+	if storedRedirect != "" && isValidRedirect(storedRedirect) {
 		return storedRedirect
 	}
 	return a.cfg.PostLoginRedirect
@@ -1081,26 +1085,48 @@ func parseStateCookie(value string) (state, redirect string) {
 	return
 }
 
-// isValidRedirect checks that the redirect is a safe relative path.
-// Rejects absolute URLs, protocol-relative URLs, and empty strings.
+// isValidRedirect reports whether redirect is a same-origin PATH that is safe to
+// place in a Location header: it begins with exactly one "/", the next byte is
+// neither "/" nor "\", and it carries no scheme, authority, backslash,
+// whitespace or control character.
+//
+// ⚠️ CHARACTER RULES, NOT ONLY SHAPE RULES (go-vai-oidc#30). Browsers strip ASCII
+// tab, LF and CR while parsing a URL (WHATWG URL §4.4), so "/\t/host" has no "//"
+// prefix to catch yet resolves to "//host" — an open redirect after login. Every
+// byte <= 0x20, DEL, and every Unicode control or space rune is therefore
+// refused anywhere in the value; so is every backslash (browsers read "\" as "/"
+// in special schemes).
+//
+// ⚠️ PERCENT-ENCODING IS NOT DECODED HERE, ON PURPOSE. The login handler reads the
+// value through r.URL.Query().Get, which has ALREADY decoded one layer
+// (?redirect=%2F%09%2Fhost arrives as "/\t/host" and is refused above), and the
+// value is then placed in a Location header verbatim, never decoded again — so a
+// literal "%09" or "%2F" is a path segment to the browser, not a tab or slash.
+// A consumer that percent-decodes the value itself must re-validate the result.
 func isValidRedirect(redirect string) bool {
-	if redirect == "" {
+	if redirect == "" || redirect[0] != '/' {
 		return false
 	}
-	if !strings.HasPrefix(redirect, "/") {
+	if len(redirect) > 1 && (redirect[1] == '/' || redirect[1] == '\\') {
 		return false
 	}
-	if strings.HasPrefix(redirect, "//") {
-		return false
+	for _, r := range redirect {
+		if r == '\\' || r == utf8.RuneError || unicode.IsControl(r) || unicode.IsSpace(r) {
+			return false
+		}
 	}
 	if strings.Contains(redirect, "://") {
 		return false
 	}
-	// Block backslashes — some browsers normalize \/ to // (open redirect).
-	if strings.ContainsAny(redirect, "\\") {
+	// Belt and braces: what net/url makes of it must be a bare path.
+	u, err := url.Parse(redirect)
+	if err != nil || u.Scheme != "" || u.Host != "" || u.User != nil || u.Opaque != "" {
 		return false
 	}
-	return true
+	// EscapedPath, not Path: Path is percent-DECODED, and the value is never
+	// decoded on its way to the browser (see above).
+	p := u.EscapedPath()
+	return strings.HasPrefix(p, "/") && !strings.HasPrefix(p, "//")
 }
 
 // buildLogoutURL constructs the Keycloak RP-Initiated Logout URL.
