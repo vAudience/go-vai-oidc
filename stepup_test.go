@@ -39,6 +39,17 @@ func cookieNamed(rec *httptest.ResponseRecorder, name string) *http.Cookie {
 	return nil
 }
 
+// flowCookieOf finds the flow cookie base a login/sync start wrote for the
+// flow its redirect names (v0.37.0: flow cookies carry the state's suffix).
+func flowCookieOf(t *testing.T, rec *httptest.ResponseRecorder, base string) *http.Cookie {
+	t.Helper()
+	loc, err := url.Parse(rec.Header().Get("Location"))
+	require.NoError(t, err)
+	state := loc.Query().Get(queryParamState)
+	require.NotEmpty(t, state, "the redirect carries the flow's state")
+	return cookieNamed(rec, base+flowSuffix(state))
+}
+
 func TestLogin_MaxAge(t *testing.T) {
 	for name, tc := range map[string]struct {
 		query      string
@@ -69,20 +80,22 @@ func TestLogin_MaxAge(t *testing.T) {
 
 			if tc.wantStatus == http.StatusBadRequest {
 				assert.Empty(t, rec.Header().Get("Location"), "a malformed max_age must not start a login")
-				assert.Nil(t, cookieNamed(rec, cookieOIDCState), "no state may be minted for a refused login")
+				assert.Empty(t, rec.Result().Cookies(), "no state may be minted for a refused login")
 				assert.Contains(t, rec.Body.String(), errBodyInvalidMaxAge)
 				return
 			}
 
 			loc, err := url.Parse(rec.Header().Get("Location"))
 			require.NoError(t, err)
-			marker := cookieNamed(rec, cookieOIDCMaxAge)
-			require.NotNil(t, marker, "the marker is always written: set for a step-up, expired otherwise")
+			marker := flowCookieOf(t, rec, cookieOIDCMaxAge)
 			if tc.wantMaxAge == "" {
 				assert.False(t, loc.Query().Has(queryParamMaxAge))
-				assert.Equal(t, -1, marker.MaxAge, "an ordinary login must clear a stale step-up marker")
+				// v0.37.0: the marker is per flow, so an ordinary login writes none and
+				// cannot inherit a stale one (no clear is needed).
+				assert.Nil(t, marker, "an ordinary login writes no max_age marker for its flow")
 				return
 			}
+			require.NotNil(t, marker, "a step-up writes its flow's marker")
 			assert.Equal(t, tc.wantMaxAge, loc.Query().Get(queryParamMaxAge))
 			gotAge, startedAt, ok := parseMaxAgeCookie(marker.Value)
 			require.True(t, ok, "marker %q must decode", marker.Value)

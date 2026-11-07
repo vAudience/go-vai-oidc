@@ -229,13 +229,9 @@ func TestSessionSync_StartRequestsPromptNone(t *testing.T) {
 	assert.NotContains(t, loc, "kc_idp_hint",
 		"an IdP hint can send a hidden frame to an external interactive login page")
 
-	names := map[string]bool{}
-	for _, c := range rec.Result().Cookies() {
-		names[c.Name] = true
-	}
-	assert.True(t, names[cookieOIDCSync], "the callback distinguishes the two round trips by this cookie alone")
-	assert.True(t, names[cookieOIDCState])
-	assert.True(t, names[cookiePKCEVerifier])
+	assert.NotNil(t, flowCookieOf(t, rec, cookieOIDCSync), "the callback distinguishes the two round trips by this cookie alone")
+	assert.NotNil(t, flowCookieOf(t, rec, cookieOIDCState))
+	assert.NotNil(t, flowCookieOf(t, rec, cookiePKCEVerifier))
 }
 
 // --- the verdict ------------------------------------------------------------

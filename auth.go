@@ -575,16 +575,18 @@ func (a *Auth) handleLogin(w http.ResponseWriter, r *http.Request) {
 		stateValue = state + stateCookieDelimiter + redirect
 	}
 
-	setOIDCCookie(w, a.cfg.flowCookieName(cookieOIDCState), stateValue, a.cfg.CookiePath, a.cfg.secureCookie())
-	setOIDCCookie(w, a.cfg.flowCookieName(cookiePKCEVerifier), verifier, a.cfg.CookiePath, a.cfg.secureCookie())
+	// v0.37.0: every cookie of this flow is named by its own state, so a second
+	// login started in another tab cannot overwrite it (flowcookies.go).
+	a.makeRoomForFlow(w, r)
+	flow := flowSuffix(state)
+	setOIDCCookie(w, a.cfg.flowCookie(cookieOIDCState, flow), stateValue, a.cfg.CookiePath, a.cfg.secureCookie())
+	setOIDCCookie(w, a.cfg.flowCookie(cookiePKCEVerifier, flow), verifier, a.cfg.CookiePath, a.cfg.secureCookie())
 	if maxAgeRequested {
 		// The callback must know max_age was asked for (auth_time becomes
 		// REQUIRED) and when the login started (the bound is measured from it).
-		setOIDCCookie(w, a.cfg.flowCookieName(cookieOIDCMaxAge), maxAgeCookieValue(maxAge, time.Now().UTC()), a.cfg.CookiePath, a.cfg.secureCookie())
-	} else {
-		// A stale marker from an abandoned step-up must not make this ordinary
-		// login demand auth_time.
-		clearOIDCCookie(w, a.cfg.flowCookieName(cookieOIDCMaxAge), a.cfg.CookiePath, a.cfg.secureCookie())
+		// ⚠ Per flow, so a stale marker from an abandoned step-up can no longer
+		// make an ordinary login demand auth_time: a new flow never inherits one.
+		setOIDCCookie(w, a.cfg.flowCookie(cookieOIDCMaxAge, flow), maxAgeCookieValue(maxAge, time.Now().UTC()), a.cfg.CookiePath, a.cfg.secureCookie())
 	}
 
 	// v0.5.0: forward selected query params from /auth/login to
@@ -634,7 +636,8 @@ func authCodeExtras(r *http.Request) map[string]string {
 // realm client in this fleet registers an EXACT redirect URI — see
 // cookieOIDCSync for why a second registered URI was refused as a cost.
 func (a *Auth) handleCallback(w http.ResponseWriter, r *http.Request) {
-	_, syncErr := r.Cookie(a.cfg.flowCookieName(cookieOIDCSync))
+	flow := a.callbackFlow(r)
+	_, syncErr := r.Cookie(a.cfg.flowCookie(cookieOIDCSync, flow))
 	isSync := syncErr == nil
 
 	// v0.32.0: opt-in refusal of a callback the browser says a same-site page
@@ -656,36 +659,34 @@ func (a *Auth) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if isSync {
-		a.handleSyncCallback(w, r)
+		a.handleSyncCallback(w, r, flow)
 		return
 	}
-	a.handleLoginCallback(w, r)
+	a.handleLoginCallback(w, r, flow)
 }
 
 // refuseDuplicateFlowCookies logs a tossed duplicate, clears this host's own
 // flow cookies (a cookie planted on a parent domain cannot be cleared from
 // here, which is why CookieHostPrefix is the fix) and ends the login at
 // LogoutRedirect — the existing refusal path.
-func (a *Auth) refuseDuplicateFlowCookies(w http.ResponseWriter, r *http.Request, err error) {
+func (a *Auth) refuseDuplicateFlowCookies(w http.ResponseWriter, r *http.Request, flow string, err error) {
 	a.logger.Warn(logMsgFlowCookieDuplicate,
 		slog.String(logKeyComponent, logComponent),
 		slog.String(logKeyError, err.Error()),
 		slog.String(logKeyClientIP, clientIP(r)),
 	)
-	clearOIDCCookie(w, a.cfg.flowCookieName(cookieOIDCState), a.cfg.CookiePath, a.cfg.secureCookie())
-	clearOIDCCookie(w, a.cfg.flowCookieName(cookiePKCEVerifier), a.cfg.CookiePath, a.cfg.secureCookie())
-	clearOIDCCookie(w, a.cfg.flowCookieName(cookieOIDCMaxAge), a.cfg.CookiePath, a.cfg.secureCookie())
+	a.clearFlowCookies(w, flow)
 	http.Redirect(w, r, a.cfg.LogoutRedirect, http.StatusFound)
 }
 
 // handleLoginCallback is the authorization-code callback that MINTS a session.
-func (a *Auth) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
+func (a *Auth) handleLoginCallback(w http.ResponseWriter, r *http.Request, flow string) {
 	// Read and clear OIDC cookies immediately.
 	// v0.32.0: uniqueCookie, not r.Cookie — a second cookie of the same name is
 	// a tossed one, and r.Cookie would read whichever the browser sent first.
-	stateCookie, err := uniqueCookie(r, a.cfg.flowCookieName(cookieOIDCState))
+	stateCookie, err := uniqueCookie(r, a.cfg.flowCookie(cookieOIDCState, flow))
 	if errors.Is(err, errDuplicateCookie) {
-		a.refuseDuplicateFlowCookies(w, r, err)
+		a.refuseDuplicateFlowCookies(w, r, flow, err)
 		return
 	}
 	if err != nil {
@@ -697,9 +698,9 @@ func (a *Auth) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pkceCookie, err := uniqueCookie(r, a.cfg.flowCookieName(cookiePKCEVerifier))
+	pkceCookie, err := uniqueCookie(r, a.cfg.flowCookie(cookiePKCEVerifier, flow))
 	if errors.Is(err, errDuplicateCookie) {
-		a.refuseDuplicateFlowCookies(w, r, err)
+		a.refuseDuplicateFlowCookies(w, r, flow, err)
 		return
 	}
 	if err != nil {
@@ -711,11 +712,10 @@ func (a *Auth) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	clearOIDCCookie(w, a.cfg.flowCookieName(cookieOIDCState), a.cfg.CookiePath, a.cfg.secureCookie())
-	clearOIDCCookie(w, a.cfg.flowCookieName(cookiePKCEVerifier), a.cfg.CookiePath, a.cfg.secureCookie())
 	// v0.28.0: the max_age marker is read below (the request still carries it)
 	// and cleared here with the others, so no later login inherits it.
-	clearOIDCCookie(w, a.cfg.flowCookieName(cookieOIDCMaxAge), a.cfg.CookiePath, a.cfg.secureCookie())
+	// v0.37.0: only THIS flow's cookies — another tab's login stays intact.
+	a.clearFlowCookies(w, flow)
 
 	// Parse state: "state" or "state|redirect".
 	storedState, storedRedirect := parseStateCookie(stateCookie.Value)
@@ -772,7 +772,7 @@ func (a *Auth) handleLoginCallback(w http.ResponseWriter, r *http.Request) {
 	// enough one (OIDC Core §3.1.3.7 rule 13). Before the gates and the
 	// resolver, so a refused step-up has no resolver side effects.
 	authTime := user.AuthTime
-	if !a.verifyRequestedMaxAge(r, authTime) {
+	if !a.verifyRequestedMaxAge(r, flow, authTime) {
 		http.Redirect(w, r, a.cfg.LogoutRedirect, http.StatusFound)
 		return
 	}

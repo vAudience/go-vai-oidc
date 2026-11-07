@@ -583,6 +583,11 @@ vaioidc.Config{
   `LogoutRedirect`; a sync callback reports `error`). Which duplicate a browser sends first is the
   planting party's choice, so the package never reads "the first". This only helps when a genuine
   login is in flight; `CookieHostPrefix` is the fix.
+- **Per-flow cookie names (v0.37.0).** The state, verifier, `max_age` and sync cookies are written as
+  `<name>_<12 hex of SHA-256(state)>`, so several logins (or syncs) in flight in one browser — two
+  restored tabs — no longer overwrite each other. The callback reads and clears only the flow its
+  `state` names, and falls back to the fixed pre-v0.37.0 names for a flow started before an upgrade.
+  At most four flows are held; a fifth start clears the older ones. `Max-Age` stays 300 s.
 - **`RejectSameSiteCallback`** refuses a callback whose `Sec-Fetch-Site` is `same-site` or
   `same-origin` (a genuine callback is a redirect from the IdP: `cross-site`). A request without the
   header is let through. ⛔ Do not enable it when the IdP is same-site with your callback

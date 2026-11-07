@@ -141,8 +141,9 @@ func TestLogin_FlowCookieNamesAndAttributes(t *testing.T) {
 		want   []string
 	}{
 		// ⛔ The default must stay byte-for-byte what every pinned consumer sees today.
-		"default: pre-v0.32.0 names": {false, []string{cookieOIDCState, cookiePKCEVerifier, cookieOIDCMaxAge}},
-		"CookieHostPrefix: __Host-":  {true, []string{guardTestStatePrefixed, guardTestPKCEPrefixed, cookieHostPrefix + cookieOIDCMaxAge}},
+		// v0.37.0: the pre-v0.32.0 base names, each suffixed by the flow's own state.
+		"default: per-flow names":   {false, []string{cookieOIDCState, cookiePKCEVerifier}},
+		"CookieHostPrefix: __Host-": {true, []string{guardTestStatePrefixed, guardTestPKCEPrefixed}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			a, _ := newGuardAuth(t, func(c *Config) { c.CookieHostPrefix = tc.prefix })
@@ -154,9 +155,10 @@ func TestLogin_FlowCookieNamesAndAttributes(t *testing.T) {
 			for _, c := range rec.Result().Cookies() {
 				got[c.Name] = c
 			}
-			require.Len(t, got, len(tc.want), "login writes exactly the state, verifier and max_age-clear cookies")
-			for _, n := range tc.want {
-				c := got[n]
+			require.Len(t, got, len(tc.want), "login writes exactly the state and verifier cookies")
+			for _, base := range tc.want {
+				n := base
+				c := flowCookieOf(t, rec, base)
 				require.NotNil(t, c, "missing cookie %q", n)
 				// The three attributes a browser checks for __Host- — and the
 				// attributes every default login has always had.
@@ -175,10 +177,11 @@ func TestLogin_DefaultSetCookieHeaderIsUnchanged(t *testing.T) {
 	rec := httptest.NewRecorder()
 	a.handleLogin(rec, httptest.NewRequest(http.MethodGet, "/auth/login", nil))
 	headers := rec.Header().Values("Set-Cookie")
-	require.Len(t, headers, 3)
-	assert.Regexp(t, `^vai_oidc_state=[^;]+; Path=/; Max-Age=300; HttpOnly; Secure; SameSite=Lax$`, headers[0])
-	assert.Regexp(t, `^vai_pkce_verifier=[^;]+; Path=/; Max-Age=300; HttpOnly; Secure; SameSite=Lax$`, headers[1])
-	assert.Equal(t, `vai_oidc_max_age=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`, headers[2])
+	// v0.37.0: the attributes are unchanged; the NAMES carry the flow's suffix and
+	// the max_age clear is gone (a per-flow marker cannot be inherited).
+	require.Len(t, headers, 2)
+	assert.Regexp(t, `^vai_oidc_state_[0-9a-f]{12}=[^;]+; Path=/; Max-Age=300; HttpOnly; Secure; SameSite=Lax$`, headers[0])
+	assert.Regexp(t, `^vai_pkce_verifier_[0-9a-f]{12}=[^;]+; Path=/; Max-Age=300; HttpOnly; Secure; SameSite=Lax$`, headers[1])
 }
 
 // --- the callback under CookieHostPrefix -------------------------------------
