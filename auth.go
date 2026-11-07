@@ -569,16 +569,13 @@ func (a *Auth) handleLogin(w http.ResponseWriter, r *http.Request) {
 		redirect = ""
 	}
 
-	// Store state + redirect in one cookie (pipe-delimited).
-	stateValue := state
-	if redirect != "" {
-		stateValue = state + stateCookieDelimiter + redirect
-	}
-
 	// v0.37.0: every cookie of this flow is named by its own state, so a second
 	// login started in another tab cannot overwrite it (flowcookies.go).
 	a.makeRoomForFlow(w, r)
 	flow := flowSuffix(state)
+	// The state + redirect in one cookie (pipe-delimited), led by the start time
+	// the cap evicts by; an over-long redirect is dropped (maxFlowRedirectBytes).
+	stateValue := flowStateValue(a.clock().UnixMilli(), state, redirect)
 	setOIDCCookie(w, a.cfg.flowCookie(cookieOIDCState, flow), stateValue, a.cfg.CookiePath, a.cfg.secureCookie())
 	setOIDCCookie(w, a.cfg.flowCookie(cookiePKCEVerifier, flow), verifier, a.cfg.CookiePath, a.cfg.secureCookie())
 	if maxAgeRequested {
@@ -1075,6 +1072,7 @@ func (a *Auth) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 // parseStateCookie splits "state|redirect" into components.
 func parseStateCookie(value string) (state, redirect string) {
+	_, value = splitFlowStart(value) // v0.37.0: a per-flow value leads with its start time
 	parts := strings.SplitN(value, stateCookieDelimiter, 2)
 	state = parts[0]
 	if len(parts) > 1 {

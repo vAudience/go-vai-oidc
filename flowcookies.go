@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -36,7 +38,39 @@ const (
 	// loop, and five minutes (oidcCookieMaxAge) retires them anyway.
 	maxConcurrentFlows = 4
 	flowSuffixSep      = "_"
+	// flowStartSep separates a per-flow state cookie's start time (base-36 Unix
+	// milliseconds) from the state: `<start>~<state>[|<redirect>]`. The state is
+	// hex, so it never contains it; a pre-v0.37.0 value carries no start.
+	flowStartSep = "~"
+	// maxFlowRedirectBytes bounds the redirect a flow's state cookie stores. Four
+	// pending flows with long return paths would otherwise push the Cookie header
+	// past an ingress's 8 KiB request-header buffer; a longer one is dropped (the
+	// login then lands on PostLoginRedirect).
+	maxFlowRedirectBytes = 1024
 )
+
+// flowStateValue is a per-flow state cookie's value: the start time, the state
+// and the (bounded) redirect.
+func flowStateValue(startedAtMs int64, state, redirect string) string {
+	v := strconv.FormatInt(startedAtMs, 36) + flowStartSep + state
+	if redirect != "" && len(redirect) <= maxFlowRedirectBytes {
+		v += stateCookieDelimiter + redirect
+	}
+	return v
+}
+
+// splitFlowStart strips a per-flow state value's start time; 0 when absent.
+func splitFlowStart(value string) (startedAtMs int64, rest string) {
+	head, tail, ok := strings.Cut(value, flowStartSep)
+	if !ok || strings.Contains(head, stateCookieDelimiter) {
+		return 0, value
+	}
+	ms, err := strconv.ParseInt(head, 36, 64)
+	if err != nil {
+		return 0, value
+	}
+	return ms, tail
+}
 
 // flowSuffix names the cookies of the flow whose OAuth `state` is state.
 func flowSuffix(state string) string {
@@ -73,21 +107,29 @@ func (a *Auth) clearFlowCookies(w http.ResponseWriter, flow string) {
 }
 
 // makeRoomForFlow enforces maxConcurrentFlows before a new flow's cookies are
-// set: when the browser already holds that many per-flow state cookies, every
-// one of those flows is cleared (the newest request is the one the person is
-// waiting on).
+// set: when the browser already holds that many per-flow state cookies, the
+// OLDEST are cleared — just enough to leave room for the new one — so the
+// flows a person started most recently (other tabs) still complete. A flow
+// whose value carries no start time sorts as the oldest.
 func (a *Auth) makeRoomForFlow(w http.ResponseWriter, r *http.Request) {
 	prefix := a.cfg.flowCookieName(cookieOIDCState) + flowSuffixSep
-	var flows []string
+	type pending struct {
+		flow    string
+		started int64
+	}
+	var flows []pending
 	for _, c := range r.Cookies() {
 		if strings.HasPrefix(c.Name, prefix) {
-			flows = append(flows, c.Name[len(prefix)-len(flowSuffixSep):])
+			started, _ := splitFlowStart(c.Value)
+			flows = append(flows, pending{c.Name[len(prefix)-len(flowSuffixSep):], started})
 		}
 	}
-	if len(flows) < maxConcurrentFlows {
+	excess := len(flows) - (maxConcurrentFlows - 1)
+	if excess <= 0 {
 		return
 	}
-	for _, flow := range flows {
-		a.clearFlowCookies(w, flow)
+	sort.SliceStable(flows, func(i, j int) bool { return flows[i].started < flows[j].started })
+	for _, p := range flows[:excess] {
+		a.clearFlowCookies(w, p.flow)
 	}
 }

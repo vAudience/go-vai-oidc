@@ -5,8 +5,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -127,14 +129,19 @@ func TestCallback_UnknownStateClearsNoOtherFlow(t *testing.T) {
 	}
 }
 
-// A browser holding maxConcurrentFlows pending flows has them all cleared
-// before a new one is set, so the Cookie header cannot grow without bound.
-func TestLogin_ConcurrentFlowsAreCapped(t *testing.T) {
+// E1: at the cap, only the OLDEST flows are evicted — just enough to make room
+// — so tabs started most recently still complete. Five starts keep the newest
+// three of the first four, plus the fifth. Revert-check: clear every pending
+// flow at the cap → red.
+func TestLogin_ConcurrentFlowsEvictOldestFirst(t *testing.T) {
 	kc := newSyncKeycloak(t)
 	a := newSyncAuth(t, kc, false)
+	clock := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
+	a.now = func() time.Time { return clock }
 	jar := cookieJar{}
 	var states []string
 	for i := 0; i < maxConcurrentFlows+1; i++ {
+		clock = clock.Add(time.Second)
 		r := httptest.NewRequest(http.MethodGet, testLoginPathForStepUp, nil)
 		jar.attach(r)
 		rec := httptest.NewRecorder()
@@ -142,14 +149,55 @@ func TestLogin_ConcurrentFlowsAreCapped(t *testing.T) {
 		jar.apply(rec)
 		states = append(states, stateOf(t, rec))
 	}
-	pending := 0
-	for n := range jar {
-		if len(n) > len(cookieOIDCState) && n[:len(cookieOIDCState)+1] == cookieOIDCState+flowSuffixSep {
-			pending++
-		}
+	held := func(state string) bool { _, ok := jar[cookieOIDCState+flowSuffix(state)]; return ok }
+	assert.False(t, held(states[0]), "the oldest flow is evicted")
+	for _, s := range states[1:] {
+		assert.True(t, held(s), "a newer flow survives")
 	}
-	assert.Equal(t, 1, pending, "the start past the cap cleared the older flows")
-	_, newest := jar[cookieOIDCState+flowSuffix(states[len(states)-1])]
-	assert.True(t, newest, "the newest flow survives")
-	assert.LessOrEqual(t, pending, maxConcurrentFlows)
+	_, verifierLeft := jar[cookiePKCEVerifier+flowSuffix(states[0])]
+	assert.False(t, verifierLeft, "the evicted flow's verifier goes with it")
+}
+
+// E2: a flow stores at most maxFlowRedirectBytes of redirect; a longer one is
+// dropped so four pending flows cannot push the Cookie header past 8 KiB.
+func TestLogin_LongRedirectIsNotStored(t *testing.T) {
+	kc := newSyncKeycloak(t)
+	a := newSyncAuth(t, kc, false)
+	for name, tc := range map[string]struct {
+		redirect string
+		kept     bool
+	}{
+		"at the bound: kept":      {"/" + strings.Repeat("a", maxFlowRedirectBytes-1), true},
+		"over the bound: dropped": {"/" + strings.Repeat("a", maxFlowRedirectBytes), false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			a.handleLogin(rec, httptest.NewRequest(http.MethodGet, testLoginPathForStepUp+"?redirect="+url.QueryEscape(tc.redirect), nil))
+			c := flowCookieOf(t, rec, cookieOIDCState)
+			require.NotNil(t, c)
+			state, redirect := parseStateCookie(c.Value)
+			assert.Equal(t, stateOf(t, rec), state, "the state survives either way")
+			if tc.kept {
+				assert.Equal(t, tc.redirect, redirect)
+			} else {
+				assert.Empty(t, redirect)
+				assert.NotContains(t, c.Value, stateCookieDelimiter, "nothing of the redirect is stored")
+			}
+		})
+	}
+}
+
+func TestParseStateCookie_LegacyAndPerFlowValues(t *testing.T) {
+	for name, tc := range map[string]struct{ value, state, redirect string }{
+		"legacy, no redirect":             {"abc123", "abc123", ""},
+		"legacy, redirect":                {"abc123|/x?y=1", "abc123", "/x?y=1"},
+		"per flow, no redirect":           {flowStateValue(1700000000000, "abc123", ""), "abc123", ""},
+		"per flow, redirect with ~ and |": {flowStateValue(1700000000000, "abc123", "/x~y|z"), "abc123", "/x~y|z"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			state, redirect := parseStateCookie(tc.value)
+			assert.Equal(t, tc.state, state)
+			assert.Equal(t, tc.redirect, redirect)
+		})
+	}
 }

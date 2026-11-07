@@ -121,7 +121,7 @@ func (a *Auth) handleSessionSync(w http.ResponseWriter, r *http.Request) {
 	// v0.37.0: per-flow names, so two tabs syncing at once do not clobber each other.
 	a.makeRoomForFlow(w, r)
 	flow := flowSuffix(state)
-	setOIDCCookie(w, a.cfg.flowCookie(cookieOIDCState, flow), state, a.cfg.CookiePath, a.cfg.secureCookie())
+	setOIDCCookie(w, a.cfg.flowCookie(cookieOIDCState, flow), flowStateValue(a.clock().UnixMilli(), state, ""), a.cfg.CookiePath, a.cfg.secureCookie())
 	setOIDCCookie(w, a.cfg.flowCookie(cookiePKCEVerifier, flow), verifier, a.cfg.CookiePath, a.cfg.secureCookie())
 	setOIDCCookie(w, a.cfg.flowCookie(cookieOIDCSync, flow), cookieSyncMarkerValue, a.cfg.CookiePath, a.cfg.secureCookie())
 
