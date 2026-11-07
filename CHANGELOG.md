@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.37.0 — 2026-11-07
+
+**Per-flow state/PKCE cookies: two logins in flight in one browser both complete** (atlas#1084).
+
+- Before, the state, PKCE verifier, step-up `max_age` marker and sync marker each had ONE fixed name per
+  instance. Two tabs starting a login overwrote each other's cookies, and the first callback then cleared
+  the survivor, so BOTH failed and landed on `LogoutRedirect`. atlas#1084 (a signed-out visit redirects
+  straight to `/auth/login`) makes that ordinary: a browser restoring two expired tabs starts two flows.
+- Each flow's cookies are now named `<name>_<suffix>`, the suffix being 12 hex characters of SHA-256 of the
+  flow's own `state` (never the state itself). The callback derives the suffix from its `state` query
+  parameter, reads that flow's cookies, and clears ONLY them. The full state is still compared in constant
+  time against the cookie's value; duplicate (tossed) refusal and `CookieHostPrefix` apply per name as before.
+- **Rolling upgrade:** when no per-flow cookie matches, the callback falls back to the fixed pre-v0.37.0 names,
+  so a login started on an old instance still completes.
+- **Bounded:** at most `maxConcurrentFlows` (4) flows. At the cap a new start evicts only the OLDEST — just
+  enough to make room — ordered by a start time the per-flow state value now leads with
+  (`<base36 ms>~<state>[|<redirect>]`; `parseStateCookie` reads both shapes). The stored redirect is capped at
+  `maxFlowRedirectBytes` (1 KiB) and dropped when longer, so four pending flows stay well under an ingress's
+  8 KiB header buffer (the login then lands on `PostLoginRedirect`). `Max-Age` stays 300 s.
+- **Behaviour change:** an ordinary login no longer writes a `vai_oidc_max_age` clear — a per-flow marker
+  cannot be inherited by a later flow. The default login's Set-Cookie header changes NAMES only (attributes
+  unchanged); `TestLogin_DefaultSetCookieHeaderIsUnchanged` now pins the suffixed shape.
+- **Guards:** `TestLogin_TwoFlowsInterleavedBothSignIn` (a cookie jar, two starts, two callbacks, a token
+  endpoint that checks each code's PKCE verifier; proven red with a constant suffix),
+  `TestCallback_UnknownStateClearsNoOtherFlow`, `TestLogin_ConcurrentFlowsEvictOldestFirst` (proven red by
+  clearing every flow at the cap), `TestLogin_LongRedirectIsNotStored` (proven red without the bound),
+  `TestParseStateCookie_LegacyAndPerFlowValues`.
+- `obolresolver.ClientVersion` → `go-vai-oidc/0.37.0`.
+
 ## v0.36.0 — 2026-10-27
 
 **obol#497 — invitations auto-accept only for a verified address.** `obolresolver` now forwards the session's

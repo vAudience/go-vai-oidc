@@ -118,9 +118,12 @@ func (a *Auth) handleSessionSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	setOIDCCookie(w, a.cfg.flowCookieName(cookieOIDCState), state, a.cfg.CookiePath, a.cfg.secureCookie())
-	setOIDCCookie(w, a.cfg.flowCookieName(cookiePKCEVerifier), verifier, a.cfg.CookiePath, a.cfg.secureCookie())
-	setOIDCCookie(w, a.cfg.flowCookieName(cookieOIDCSync), cookieSyncMarkerValue, a.cfg.CookiePath, a.cfg.secureCookie())
+	// v0.37.0: per-flow names, so two tabs syncing at once do not clobber each other.
+	a.makeRoomForFlow(w, r)
+	flow := flowSuffix(state)
+	setOIDCCookie(w, a.cfg.flowCookie(cookieOIDCState, flow), flowStateValue(a.clock().UnixMilli(), state, ""), a.cfg.CookiePath, a.cfg.secureCookie())
+	setOIDCCookie(w, a.cfg.flowCookie(cookiePKCEVerifier, flow), verifier, a.cfg.CookiePath, a.cfg.secureCookie())
+	setOIDCCookie(w, a.cfg.flowCookie(cookieOIDCSync, flow), cookieSyncMarkerValue, a.cfg.CookiePath, a.cfg.secureCookie())
 
 	// ⛔ `prompt=none` is the whole safety property of running this in an iframe.
 	// Without it Keycloak renders its login page into a frame the user cannot
@@ -144,15 +147,13 @@ func (a *Auth) handleSessionSync(w http.ResponseWriter, r *http.Request) {
 // this path can only confirm or destroy one that already passed them. Running
 // a UserResolver here would also put a network call to the identity backend on
 // a timer in every browser tab.
-func (a *Auth) handleSyncCallback(w http.ResponseWriter, r *http.Request) {
+func (a *Auth) handleSyncCallback(w http.ResponseWriter, r *http.Request, flow string) {
 	w.Header().Set(headerCacheControl, cacheControlNoStore)
 
-	stateCookie, stateErr := uniqueCookie(r, a.cfg.flowCookieName(cookieOIDCState))
-	pkceCookie, pkceErr := uniqueCookie(r, a.cfg.flowCookieName(cookiePKCEVerifier))
+	stateCookie, stateErr := uniqueCookie(r, a.cfg.flowCookie(cookieOIDCState, flow))
+	pkceCookie, pkceErr := uniqueCookie(r, a.cfg.flowCookie(cookiePKCEVerifier, flow))
 
-	clearOIDCCookie(w, a.cfg.flowCookieName(cookieOIDCState), a.cfg.CookiePath, a.cfg.secureCookie())
-	clearOIDCCookie(w, a.cfg.flowCookieName(cookiePKCEVerifier), a.cfg.CookiePath, a.cfg.secureCookie())
-	clearOIDCCookie(w, a.cfg.flowCookieName(cookieOIDCSync), a.cfg.CookiePath, a.cfg.secureCookie())
+	a.clearFlowCookies(w, flow)
 
 	// v0.32.0: a tossed duplicate is refused like a missing cookie, but named.
 	if errors.Is(stateErr, errDuplicateCookie) || errors.Is(pkceErr, errDuplicateCookie) {
