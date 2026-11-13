@@ -1,5 +1,50 @@
 # Changelog
 
+## v0.38.0 — 2026-11-13
+
+**Set or change the Keycloak password from the app: `kc_action=UPDATE_PASSWORD` and `Auth.PasswordActionURL`.**
+Additive. A person who signed in through a Google or Microsoft broker and has no password yet sets their first one
+through the same form.
+
+- **`/auth/login?kc_action=UPDATE_PASSWORD`** forwards `kc_action` to the authorization request (Keycloak
+  application-initiated actions). The value is allowlisted: `KCActionUpdatePassword` only, matched exactly. Any other
+  non-empty value is **refused with 400**, like a malformed `max_age` (v0.28.0) — dropping it would silently turn a
+  password change into an ordinary login. It is NOT in `authCodeExtras`' generic list.
+- The flow is marked by a per-flow `vai_oidc_kc_action` cookie (`flowcookies.go`: same suffix, `Max-Age`, duplicate
+  refusal and clearing as the other flow cookies; it counts toward no new cap).
+- **The callback appends `kc_action_status=success|cancelled|error`** to the post-login target (`postLoginTarget`, so
+  the stored redirect is re-validated) for a kc_action flow only. An unrecognised value is never echoed; a flow that
+  did not ask for an action ignores the parameter.
+- **A code-less kc_action callback is not a failed login.** What Keycloak sends back, read from its source
+  (keycloak/keycloak `main`, cross-checked on tags 21.1.2 … 26.0.0):
+  - `LoginActionsService.requiredActionPOST` handles the form's `cancel-aia` by setting
+    `KcActionStatus.CANCELLED` and calling `AuthenticationManager.nextActionAfterAuthentication`; success sets
+    `SUCCESS`, and the not-configured / disabled / not-initiable cases in `AuthenticationManager.executeAction` and
+    `getApplicableRequiredActionsSorted` set `ERROR` and also continue. `OIDCLoginProtocol.authenticated` then adds
+    `kc_action_status` (and `kc_action`) **next to a normal `code`** — so on Keycloak 21+ every one of those is an
+    ordinary login plus a status, and the session is re-minted as usual.
+  - A required action whose context ends in `FAILURE` goes through `interruptionResponse` →
+    `OIDCLoginProtocol.sendError(Error.CONSENT_DENIED)`: `error=access_denied`, **no code and no
+    `kc_action_status`** (`buildErrorRedirectUri` adds neither).
+  - Keycloak 22.0.5's `sendError` still carries `CANCELLED_AIA` (`error=access_denied`, "User cancelled
+    aplication-initiated action.") and `CANCELLED_AIA_SILENT` (no `error` at all); on `main` those errors have no
+    caller in `services`, but an older or customised server can still send them without a code.
+  - So for a kc_action flow a callback without a code — after the state check, which still refuses a mismatch to
+    `LogoutRedirect` — redirects to the stored target with Keycloak's own status if recognised, else `cancelled` for
+    `access_denied` or no error, else `error`. It mints nothing, never calls the token endpoint and leaves the
+    existing session cookie untouched. A non-kc_action flow without a code is refused exactly as before.
+- **`func (a *Auth) PasswordActionURL(returnTo string) (string, error)`** builds
+  `<LoginPath>?kc_action=UPDATE_PASSWORD&redirect=<returnTo>`, validating `returnTo` like `StepUpLoginURL`
+  (`ErrInvalidReturnPath`).
+- **Guards** (`passwordaction_test.go`; each revert-checked red): `TestLogin_KCAction` (refused values, forwarding,
+  marker), `TestCallback_KCActionStatus` (appended only for kc_action flows, unknown/miscased status not echoed),
+  `TestCallback_KCActionWithoutCode` (no exchange, no session cookie written, status mapping),
+  `TestCallback_KCActionWithoutCode_StateMismatchRefused`, `TestCallback_KCActionDuplicateMarkerRefused`,
+  `TestPasswordActionURL`.
+- **Toolchain `go1.26.11`** (was 1.26.10): `make vuln` was red on `main` for GO-2026-6859 (`net/http`, fixed in
+  1.26.11). The `go` directive (consumer floor) stays 1.25.0.
+- `obolresolver.ClientVersion` → `go-vai-oidc/0.38.0`.
+
 ## v0.37.1 — 2026-11-07
 
 **Security: `isValidRedirect` refused only the shapes that are dangerous BEFORE URL normalisation** (go-vai-oidc#30).

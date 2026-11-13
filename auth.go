@@ -544,6 +544,18 @@ func (a *Auth) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": errBodyInvalidMaxAge})
 		return
 	}
+	// v0.38.0: kc_action is allowlisted (UPDATE_PASSWORD only) and anything
+	// else is REFUSED, never dropped — a dropped value would silently turn a
+	// password change into an ordinary login (passwordaction.go).
+	kcAction, kcActionRequested, kcActionOK := parseKCAction(r.URL.Query().Get(queryParamKCAction))
+	if !kcActionOK {
+		a.logger.Warn(logMsgKCActionInvalid,
+			slog.String(logKeyComponent, logComponent),
+			slog.String(logKeyClientIP, clientIP(r)),
+		)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": errBodyInvalidKCAction})
+		return
+	}
 
 	state, err := generateState()
 	if err != nil {
@@ -587,6 +599,11 @@ func (a *Auth) handleLogin(w http.ResponseWriter, r *http.Request) {
 		// make an ordinary login demand auth_time: a new flow never inherits one.
 		setOIDCCookie(w, a.cfg.flowCookie(cookieOIDCMaxAge, flow), maxAgeCookieValue(maxAge, time.Now().UTC()), a.cfg.CookiePath, a.cfg.secureCookie())
 	}
+	if kcActionRequested {
+		// The callback must know this flow asked for an action: it then reports
+		// kc_action_status and survives a code-less (cancelled) return.
+		setOIDCCookie(w, a.cfg.flowCookie(cookieOIDCKCAction, flow), kcAction, a.cfg.CookiePath, a.cfg.secureCookie())
+	}
 
 	// v0.5.0: forward selected query params from /auth/login to
 	// Keycloak's authorize endpoint. `kc_idp_hint` skips Keycloak's
@@ -598,6 +615,9 @@ func (a *Auth) handleLogin(w http.ResponseWriter, r *http.Request) {
 	extra := authCodeExtras(r)
 	if maxAgeRequested {
 		extra[queryParamMaxAge] = strconv.FormatInt(maxAge, 10)
+	}
+	if kcActionRequested {
+		extra[queryParamKCAction] = kcAction
 	}
 	authURL := a.provider.authCodeURL(state, challenge, extra)
 
@@ -711,6 +731,13 @@ func (a *Auth) handleLoginCallback(w http.ResponseWriter, r *http.Request, flow 
 		return
 	}
 
+	// v0.38.0: was this flow a kc_action login (passwordaction.go)?
+	isKCAction, kcErr := a.kcActionFlow(r, flow)
+	if kcErr != nil {
+		a.refuseDuplicateFlowCookies(w, r, flow, kcErr)
+		return
+	}
+
 	// v0.28.0: the max_age marker is read below (the request still carries it)
 	// and cleared here with the others, so no later login inherits it.
 	// v0.37.0: only THIS flow's cookies — another tab's login stays intact.
@@ -718,6 +745,14 @@ func (a *Auth) handleLoginCallback(w http.ResponseWriter, r *http.Request, flow 
 
 	// Parse state: "state" or "state|redirect".
 	storedState, storedRedirect := parseStateCookie(stateCookie.Value)
+
+	// v0.38.0: Keycloak can answer a cancelled or failed application-initiated
+	// action WITHOUT a code (error=access_denied, or nothing at all on older
+	// releases). That is not a failed login: the person keeps the session they
+	// have and returns where they were, with a status — never LogoutRedirect.
+	if isKCAction && a.handleKCActionWithoutCode(w, r, storedState, storedRedirect) {
+		return
+	}
 
 	// Check for IdP error.
 	if errParam := r.URL.Query().Get(queryParamError); errParam != "" {
@@ -844,6 +879,13 @@ func (a *Auth) handleLoginCallback(w http.ResponseWriter, r *http.Request, flow 
 	// Neither could be fixed from the consumer side, because this line was not
 	// configurable.
 	target := a.postLoginTarget(storedRedirect)
+	// v0.38.0: a kc_action login reports the action's outcome to the target;
+	// only a recognised status is echoed, and only for a kc_action flow.
+	if isKCAction {
+		if status := kcActionCallbackStatus(r, false); status != "" {
+			target = appendQueryParam(target, queryParamKCActionStatus, status)
+		}
+	}
 
 	// ⚠️ THE IDENTITY BACKEND'S DECISION OVERRIDES THE CONSUMER'S DESTINATION,
 	// AND ONLY HERE (v0.18.0).

@@ -22,7 +22,7 @@ package vaioidc
 //  2. Duplicate refusal (always on) — a tossed cookie with the same name as a
 //     genuine one arrives as a SECOND cookie of that name; which one a server
 //     reads first is the attacker's choice (a longer Path sorts first). A
-//     callback carrying two state, verifier or max_age cookies is refused.
+//     callback carrying two state, verifier, max_age or kc_action cookies is refused.
 //     This does not stop an attacker who tosses into a browser with no login
 //     in flight; only (1) does.
 //  3. Config.RejectSameSiteCallback — the browser's own Sec-Fetch-Site

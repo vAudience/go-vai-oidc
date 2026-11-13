@@ -476,6 +476,35 @@ returns the browser to the path it named, where the person repeats the action.
   requested. `IssueSession` (ROPC) records whatever `AuthTime` the caller's `User` carries —
   `VerifyIDToken` fills it from the token.
 
+## Setting or changing the password — `PasswordActionURL` (v0.38.0)
+
+Keycloak's **application-initiated actions** let the app send a signed-in person to Keycloak's own
+password form — including someone who signed in through a Google or Microsoft broker and has no
+password yet (they set their first one).
+
+```go
+u, err := auth.PasswordActionURL("/app/settings/account") // same-origin path only
+// full-page navigation to u; the browser comes back to
+// /app/settings/account?kc_action_status=success|cancelled|error
+```
+
+- **`/auth/login?kc_action=UPDATE_PASSWORD`** forwards `kc_action` to the authorization request.
+  `UPDATE_PASSWORD` (`vaioidc.KCActionUpdatePassword`) is the only accepted value; anything else is
+  **refused with 400**, never dropped — a dropped value would silently turn the request into an
+  ordinary login.
+- **The callback appends `kc_action_status`** to the post-login target for a kc_action flow only, and
+  only the three values Keycloak defines (`success`, `cancelled`, `error`); anything else is never
+  echoed. A login that did not ask for an action ignores the parameter.
+- **A cancelled or failed action does not sign anyone out.** Keycloak 21+ answers success, cancel and
+  the ordinary error cases with a normal `code` plus the status, so the callback is an ordinary login.
+  A required action that ends in failure (and, on Keycloak ≤ 20, a cancel) comes back with
+  `error=access_denied` and **no code**: for a kc_action flow the callback then redirects to the stored
+  target with `kc_action_status=cancelled` (or `error` for any other OAuth error), mints nothing and
+  leaves the existing session untouched. The state is still checked first.
+- `returnTo` is validated exactly as for `StepUpLoginURL` (`ErrInvalidReturnPath`). Keycloak needs no
+  realm change: `UPDATE_PASSWORD` is enabled by default; a realm that disabled it answers
+  `kc_action_status=error`.
+
 ## Staff surfaces — `RequireStaff` and the ONE staff predicate (v0.24.0)
 
 Every staff admin surface (obol `/console`, the vaisite admin, the conduit admin) gates on the same
@@ -572,7 +601,7 @@ vaioidc.Config{
 ```
 
 - **`CookieHostPrefix`** prefixes every cookie the package sets — `__Host-vai_oidc_state`,
-  `__Host-vai_pkce_verifier`, `__Host-vai_oidc_sync`, `__Host-vai_oidc_max_age`, and the session
+  `__Host-vai_pkce_verifier`, `__Host-vai_oidc_sync`, `__Host-vai_oidc_max_age`, `__Host-vai_oidc_kc_action`, and the session
   cookie (`CookieName` gains the prefix unless it already has it, chunks included). Browsers refuse
   a `__Host-` cookie that carries a `Domain`, so a sibling cannot plant one. `New()` **refuses**
   it together with `InsecureCookie` or a `CookiePath` other than `/`, because the browser would
@@ -583,7 +612,7 @@ vaioidc.Config{
   `LogoutRedirect`; a sync callback reports `error`). Which duplicate a browser sends first is the
   planting party's choice, so the package never reads "the first". This only helps when a genuine
   login is in flight; `CookieHostPrefix` is the fix.
-- **Per-flow cookie names (v0.37.0).** The state, verifier, `max_age` and sync cookies are written as
+- **Per-flow cookie names (v0.37.0).** The state, verifier, `max_age`, sync and (v0.38.0) `kc_action` cookies are written as
   `<name>_<12 hex of SHA-256(state)>`, so several logins (or syncs) in flight in one browser — two
   restored tabs — no longer overwrite each other. The callback reads and clears only the flow its
   `state` names, and falls back to the fixed pre-v0.37.0 names for a flow started before an upgrade.

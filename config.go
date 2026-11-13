@@ -104,7 +104,7 @@ type Config struct {
 	//
 	// When true, EVERY cookie this package sets carries the `__Host-` prefix:
 	// the session cookie (and its chunks) and the flow cookies (state, PKCE
-	// verifier, the session-sync marker and the step-up max_age marker). A
+	// verifier, the session-sync marker and the step-up max_age and kc_action markers). A
 	// browser accepts a `__Host-` cookie only when it is Secure, has Path=/
 	// and carries NO Domain attribute — so a sibling host on the same site
 	// (another subdomain of a parent domain that is not on the Public Suffix
@@ -414,7 +414,7 @@ func (c *Config) secureCookie() bool {
 }
 
 // flowCookieName returns the name a flow cookie (state, PKCE verifier, sync
-// marker, max_age marker) is written and read under: the base name, or the
+// marker, max_age and kc_action markers) is written and read under: the base name, or the
 // `__Host-` prefixed name under CookieHostPrefix (v0.32.0).
 func (c *Config) flowCookieName(base string) string {
 	if c.CookieHostPrefix {
