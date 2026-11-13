@@ -101,7 +101,7 @@ func (a *Auth) callbackFlow(r *http.Request) string {
 
 // clearFlowCookies removes every cookie of one flow.
 func (a *Auth) clearFlowCookies(w http.ResponseWriter, flow string) {
-	for _, base := range []string{cookieOIDCState, cookiePKCEVerifier, cookieOIDCMaxAge, cookieOIDCSync} {
+	for _, base := range []string{cookieOIDCState, cookiePKCEVerifier, cookieOIDCMaxAge, cookieOIDCSync, cookieOIDCKCAction} {
 		clearOIDCCookie(w, a.cfg.flowCookie(base, flow), a.cfg.CookiePath, a.cfg.secureCookie())
 	}
 }

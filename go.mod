@@ -7,8 +7,9 @@ go 1.25.0
 // directive above stays at 1.25.0 — it only selects the toolchain that builds
 // this module. v0.32.0: 1.26.9, because the 1.25 line has no fix for the
 // GO-2026-66xx net/http, net/textproto and crypto/tls advisories. v0.34.0:
-// 1.26.10, for GO-2026-6809 (crypto/x509).
-toolchain go1.26.10
+// 1.26.10, for GO-2026-6809 (crypto/x509). v0.38.0: 1.26.11, for GO-2026-6859
+// (net/http).
+toolchain go1.26.11
 
 require (
 	github.com/coreos/go-oidc/v3 v3.18.0
