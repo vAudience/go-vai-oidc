@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.39.0 — 2026-11-14
+
+**An authenticator app as an optional second factor: `kc_action=CONFIGURE_TOTP` and `Auth.KCActionURL`.** Additive.
+
+- `/auth/login?kc_action=CONFIGURE_TOTP` is now accepted beside `UPDATE_PASSWORD` (`KCActionConfigureTOTP`), matched
+  exactly; every other value is still **refused with 400** (`webauthn-register`, lower case, padded, …). Keycloak shows
+  its own QR-code form; the outcome comes back as `kc_action_status=success|cancelled|error`, through the same per-flow
+  marker cookie and the same code-less callback handling as the password (v0.38.0) — nothing there is action-specific.
+- `Auth.KCActionURL(action, returnTo)` builds the login URL for either action (`ErrInvalidKCAction` for any other,
+  `ErrInvalidReturnPath` as before); `PasswordActionURL` is now `KCActionURL(KCActionUpdatePassword, …)`.
+- ⚠ Whether the realm offers the action is Keycloak's: a realm with the OTP required action disabled answers
+  `kc_action_status=error`, which the caller reports as such.
+- ⚠ The landing URL carries the status only, not the action (review LOW-1): a caller offering both tells them apart
+  itself (a per-click marker, or a `returnTo` per action).
+
 ## v0.38.0 — 2026-11-13
 
 **Set or change the Keycloak password from the app: `kc_action=UPDATE_PASSWORD` and `Auth.PasswordActionURL`.**

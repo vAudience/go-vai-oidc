@@ -26,7 +26,9 @@ func TestLogin_KCAction(t *testing.T) {
 		"alongside redirect and max_age":     {"kc_action=UPDATE_PASSWORD&redirect=/app/x&max_age=0", http.StatusFound, KCActionUpdatePassword},
 		"lower case refused":                 {"kc_action=update_password", http.StatusBadRequest, ""},
 		"another action refused":             {"kc_action=delete_account", http.StatusBadRequest, ""},
-		"CONFIGURE_TOTP refused":             {"kc_action=CONFIGURE_TOTP", http.StatusBadRequest, ""},
+		"CONFIGURE_TOTP forwarded (v0.39.0)": {"kc_action=CONFIGURE_TOTP", http.StatusFound, KCActionConfigureTOTP},
+		"configure_totp lower case refused":  {"kc_action=configure_totp", http.StatusBadRequest, ""},
+		"webauthn refused":                   {"kc_action=webauthn-register", http.StatusBadRequest, ""},
 		"padded value refused":               {"kc_action=UPDATE_PASSWORD%20", http.StatusBadRequest, ""},
 		"injection attempt refused":          {"kc_action=UPDATE_PASSWORD%26prompt%3Dnone", http.StatusBadRequest, ""},
 		"refused even beside a good max_age": {"kc_action=x&max_age=0", http.StatusBadRequest, ""},
@@ -230,4 +232,29 @@ func TestPasswordActionURL(t *testing.T) {
 			assert.Equal(t, KCActionUpdatePassword, loc.Query().Get(queryParamKCAction))
 		})
 	}
+}
+
+// v0.39.0: KCActionURL builds the login URL for either accepted action and refuses any other.
+func TestKCActionURL(t *testing.T) {
+	kc := newSyncKeycloak(t)
+	a := newSyncAuth(t, kc, false)
+	got, err := a.KCActionURL(KCActionConfigureTOTP, pwTestReturn)
+	require.NoError(t, err)
+	u, err := url.Parse(got)
+	require.NoError(t, err)
+	assert.Equal(t, KCActionConfigureTOTP, u.Query().Get(queryParamKCAction))
+	assert.Equal(t, pwTestReturn, u.Query().Get(queryParamRedirect))
+
+	pw, err := a.PasswordActionURL(pwTestReturn)
+	require.NoError(t, err)
+	viaGeneric, err := a.KCActionURL(KCActionUpdatePassword, pwTestReturn)
+	require.NoError(t, err)
+	assert.Equal(t, pw, viaGeneric, "PasswordActionURL is KCActionURL for the password")
+
+	for _, bad := range []string{"", "delete_account", "configure_totp", "CONFIGURE_TOTP "} {
+		_, err := a.KCActionURL(bad, pwTestReturn)
+		assert.ErrorIs(t, err, ErrInvalidKCAction, bad)
+	}
+	_, err = a.KCActionURL(KCActionConfigureTOTP, "https://evil.example/x")
+	assert.ErrorIs(t, err, ErrInvalidReturnPath)
 }

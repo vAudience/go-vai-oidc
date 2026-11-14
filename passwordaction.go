@@ -17,7 +17,8 @@ import (
 // who signed in through a Google or Microsoft broker and has no password yet
 // gets the same form and sets their first one.
 //
-// ⛔ ONLY `UPDATE_PASSWORD` IS ACCEPTED, AND ANY OTHER VALUE IS REFUSED WITH
+// ⛔ ONLY `UPDATE_PASSWORD` AND (v0.39.0) `CONFIGURE_TOTP` ARE ACCEPTED, AND ANY
+// OTHER VALUE IS REFUSED WITH
 // 400, NEVER DROPPED. A dropped value silently turns the request into an
 // ordinary login: the person returns signed in, with no password form ever
 // shown and no status to say so. An unlisted action (delete_account, …) is a
@@ -46,9 +47,13 @@ import (
 // the existing session as it was.
 
 const (
-	// KCActionUpdatePassword is the one Keycloak application-initiated action
+	// KCActionUpdatePassword is a Keycloak application-initiated action
 	// /auth/login forwards: set (first time) or change the password.
 	KCActionUpdatePassword = "UPDATE_PASSWORD"
+	// KCActionConfigureTOTP (v0.39.0) is the other one: add an authenticator
+	// app (a time-based one-time code) as a second factor. Keycloak shows its
+	// own QR-code form; the outcome comes back exactly as for the password.
+	KCActionConfigureTOTP = "CONFIGURE_TOTP"
 
 	// KCActionStatusSuccess, KCActionStatusCancelled and KCActionStatusError
 	// are the values the post-login target may carry as `kc_action_status`
@@ -71,7 +76,7 @@ const (
 	// or cancelled action.
 	oauthErrorAccessDenied = "access_denied"
 
-	errBodyInvalidKCAction = "invalid kc_action: only " + KCActionUpdatePassword + " is supported"
+	errBodyInvalidKCAction = "invalid kc_action: only " + KCActionUpdatePassword + " and " + KCActionConfigureTOTP + " are supported"
 	logMsgKCActionInvalid  = "OIDC login: unsupported kc_action refused"
 	logMsgKCActionNoCode   = "OIDC callback: application-initiated action returned without a code"
 	logKeyKCActionStatus   = "kc_action_status"
@@ -79,16 +84,16 @@ const (
 
 // parseKCAction validates a /auth/login kc_action value. present is false when
 // the parameter is absent or empty; ok is false for any value but
-// KCActionUpdatePassword (matched exactly — Keycloak's aliases are
-// case-sensitive).
+// KCActionUpdatePassword and KCActionConfigureTOTP (matched exactly —
+// Keycloak's aliases are case-sensitive).
 func parseKCAction(raw string) (action string, present, ok bool) {
-	if raw == "" {
+	switch raw {
+	case "":
 		return "", false, true
+	case KCActionUpdatePassword, KCActionConfigureTOTP:
+		return raw, true, true
 	}
-	if raw != KCActionUpdatePassword {
-		return "", true, false
-	}
-	return raw, true, true
+	return "", true, false
 }
 
 // recognisedKCActionStatus returns raw when it is one of the three statuses
@@ -113,7 +118,18 @@ func recognisedKCActionStatus(raw string) string {
 // ⚠️ Reach it by a FULL-PAGE navigation, never an XHR: it is a redirect chain
 // through the identity provider.
 func (a *Auth) PasswordActionURL(returnTo string) (string, error) {
-	target := appendQueryParam(a.cfg.LoginPath, queryParamKCAction, KCActionUpdatePassword)
+	return a.KCActionURL(KCActionUpdatePassword, returnTo)
+}
+
+// KCActionURL (v0.39.0) is PasswordActionURL for any accepted action:
+// `<LoginPath>?kc_action=<action>&redirect=<returnTo>`. An action parseKCAction
+// does not accept is ErrInvalidKCAction; returnTo is validated as
+// PasswordActionURL validates it.
+func (a *Auth) KCActionURL(action, returnTo string) (string, error) {
+	if got, present, ok := parseKCAction(action); !present || !ok || got == "" {
+		return "", ErrInvalidKCAction
+	}
+	target := appendQueryParam(a.cfg.LoginPath, queryParamKCAction, action)
 	if returnTo == "" {
 		return target, nil
 	}
@@ -122,6 +138,10 @@ func (a *Auth) PasswordActionURL(returnTo string) (string, error) {
 	}
 	return appendQueryParam(target, queryParamRedirect, returnTo), nil
 }
+
+// ErrInvalidKCAction is KCActionURL's answer for an action /auth/login would
+// refuse.
+var ErrInvalidKCAction = errors.New("vaioidc: unsupported kc_action")
 
 // kcActionFlow reports whether the callback's flow started as a kc_action
 // login. err is errDuplicateCookie for a tossed duplicate marker.
