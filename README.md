@@ -505,6 +505,14 @@ u, err := auth.PasswordActionURL("/app/settings/account") // same-origin path on
   realm change: `UPDATE_PASSWORD` is enabled by default; a realm that disabled it answers
   `kc_action_status=error`.
 
+
+### An authenticator app — `KCActionURL(KCActionConfigureTOTP, …)` (v0.39.0)
+
+`/auth/login?kc_action=CONFIGURE_TOTP` asks Keycloak to let the person add an authenticator app (a time-based
+one-time code) as a second factor. Everything else is as for the password above: a full-page navigation, the same
+`kc_action_status` on the landing URL, a code-less cancel that leaves the session untouched. `KCActionURL(action,
+returnTo)` builds either URL; any other action is `ErrInvalidKCAction`.
+
 ## Staff surfaces — `RequireStaff` and the ONE staff predicate (v0.24.0)
 
 Every staff admin surface (obol `/console`, the vaisite admin, the conduit admin) gates on the same
