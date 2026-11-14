@@ -12,6 +12,8 @@
   `ErrInvalidReturnPath` as before); `PasswordActionURL` is now `KCActionURL(KCActionUpdatePassword, …)`.
 - ⚠ Whether the realm offers the action is Keycloak's: a realm with the OTP required action disabled answers
   `kc_action_status=error`, which the caller reports as such.
+- ⚠ The landing URL carries the status only, not the action (review LOW-1): a caller offering both tells them apart
+  itself (a per-click marker, or a `returnTo` per action).
 
 ## v0.38.0 — 2026-11-13
 

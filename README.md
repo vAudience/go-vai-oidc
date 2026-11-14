@@ -513,6 +513,9 @@ one-time code) as a second factor. Everything else is as for the password above:
 `kc_action_status` on the landing URL, a code-less cancel that leaves the session untouched. `KCActionURL(action,
 returnTo)` builds either URL; any other action is `ErrInvalidKCAction`.
 
+⚠ The landing URL carries the STATUS only, never which action produced it (security review LOW-1): a caller offering
+both actions must tell them apart itself — its own per-click marker, or a different `returnTo` per action.
+
 ## Staff surfaces — `RequireStaff` and the ONE staff predicate (v0.24.0)
 
 Every staff admin surface (obol `/console`, the vaisite admin, the conduit admin) gates on the same
