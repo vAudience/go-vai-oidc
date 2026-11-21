@@ -58,7 +58,7 @@ help:
 	@echo "  tools: golangci-lint $(GOLANGCI_VERSION), govulncheck $(GOVULNCHECK_VERSION)"
 	@echo "  vuln runs at the go.mod toolchain pin: $(TOOLCHAIN_PIN)"
 
-ci-local: fmt-check build vet test lint tidy-check vuln gitleaks
+ci-local: gitleaks fmt-check build vet test lint tidy-check vuln
 	@echo ""
 	@echo "ci-local: all gates passed"
 
