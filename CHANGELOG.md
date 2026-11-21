@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+Tooling only: `make ci-local` gains `tidy-check` (`go mod tidy -diff`) and a full-history `gitleaks` scan (`scripts/ci-gitleaks.sh`, 8.30.1 pinned by sha256), replacing the retired GitHub Actions `security.yml`. It is THE gate before every merge and release tag.
+
 ## v0.39.0 — 2026-11-14
 
 **An authenticator app as an optional second factor: `kc_action=CONFIGURE_TOTP` and `Auth.KCActionURL`.** Additive.
