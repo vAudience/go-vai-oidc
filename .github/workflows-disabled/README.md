@@ -24,7 +24,9 @@ The retired workflow is `ci.yml` in this directory.
 | `go test -race -coverprofile=coverage.out ./...`   | `make test`      |
 | `golangci-lint-action@v8` (`version: v2.3.0`)      | `make lint`      |
 | `govulncheck ./...` (installed at `v1.1.4`)        | `make vuln`      |
+| `security.yml` gitleaks job (file deleted 2026-11-21) | `make gitleaks` |
 | — (not in CI; added here)                          | `make fmt-check` |
+| — (not in CI; added here)                          | `make tidy-check` |
 
 `make lint` runs the locally installed `golangci-lint` against the repo's
 existing `.golangci.yml` (v2 format, curated `standard` set plus `gofmt`) —

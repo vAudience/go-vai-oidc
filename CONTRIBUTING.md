@@ -6,16 +6,14 @@ backward compatibility is a first-class concern.
 
 ## Building and Testing
 
-GitHub Actions are disabled. **`make ci-local` is THE gate** and must pass before every merge and every release tag. It runs, in order: gofmt, build, vet, `go test -race`, golangci-lint, `go mod tidy -diff`, govulncheck (at the pinned toolchain) and a full-history gitleaks scan. The individual commands:
+GitHub Actions are disabled. **`make ci-local` is THE gate** and must pass before every merge and every release tag. It runs, in order: gofmt, build, vet, `go test -race`, golangci-lint, `go mod tidy -diff`, govulncheck (at the pinned toolchain) and a full-history gitleaks scan. Run it, or any single step:
 
 ```sh
-go build ./...
-go test -race ./...
-golangci-lint run
-govulncheck ./...
+make ci-local
+make fmt-check build vet test lint tidy-check vuln gitleaks   # the same steps, individually
 ```
 
-All four must pass. The race detector is **non-negotiable** — every test run uses
+Every step must pass. The race detector is **non-negotiable** — every test run uses
 `-race`, and no PR is merged with data races.
 
 ## House Rules
@@ -43,4 +41,4 @@ introduced solely for it. The root package stays generic and vendor-neutral.
    above is green.
 3. Open a PR describing the change and, explicitly, its **backward-compatibility
    impact** (additive / no API change / potentially breaking).
-4. Ensure CI is green before requesting review.
+4. Ensure `make ci-local` is green before requesting review.
