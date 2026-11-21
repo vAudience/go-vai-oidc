@@ -6,6 +6,8 @@
 # Scope: the full history of every LOCAL ref (`gitleaks git`), so it is stricter than the workflow's
 # checkout: unpushed local branches are scanned too. A shallow clone is refused (the workflow forced
 # fetch-depth: 0), because a truncated history would scan clean.
+# Accepted risk: the binary is verified, then executed; something already running as this user with write
+# access to ~/.cache could swap it in between (it could equally edit the Makefile).
 # A finding is never "fixed" by rewriting history: rotate the secret, then add its fingerprint to
 # .gitleaksignore with a comment naming the rotation (or the reason it is a false positive).
 set -euo pipefail
@@ -18,6 +20,10 @@ case "$(uname -s)-$(uname -m)" in
   Linux-x86_64) ;;
   *) echo "ci-gitleaks: only linux/x86_64 has a pinned checksum; refusing to run an unverified binary" >&2; exit 2 ;;
 esac
+
+for tool in git curl tar sha256sum install; do
+  command -v "${tool}" >/dev/null || { echo "ci-gitleaks: required tool '${tool}' is missing" >&2; exit 2; }
+done
 
 root="$(git rev-parse --show-toplevel)"
 if [[ "$(git -C "${root}" rev-parse --is-shallow-repository)" != "false" ]]; then
@@ -33,8 +39,9 @@ verify_bin() { echo "${GITLEAKS_BIN_SHA256_LINUX_X64}  ${bin}" | sha256sum -c - 
 if [[ ! -x "${bin}" ]] || ! verify_bin; then
   mkdir -p "${cache}"
   tmp="$(mktemp -d)"
+  trap 'rm -rf "${tmp}" "${bin}.tmp.$$"' EXIT INT TERM
   url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-  if ! curl -fsSL -o "${tmp}/gitleaks.tgz" "${url}" \
+  if ! curl -fsSL --max-time 120 --retry 3 -o "${tmp}/gitleaks.tgz" "${url}" \
     || ! echo "${GITLEAKS_TGZ_SHA256_LINUX_X64}  ${tmp}/gitleaks.tgz" | sha256sum -c - >/dev/null \
     || ! tar -xzf "${tmp}/gitleaks.tgz" -C "${tmp}" gitleaks \
     || ! echo "${GITLEAKS_BIN_SHA256_LINUX_X64}  ${tmp}/gitleaks" | sha256sum -c - >/dev/null; then
