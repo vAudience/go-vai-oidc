@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Tooling only: `scripts/ci-gitleaks.sh` updated to the canonical v10 (verbatim from vaik8s): it unsets `GITLEAKS_CONFIG*`, refuses any spelling of `disabledRules` in `.gitleaks.toml`, and runs a canary-by-use check of the effective config before the real scan.
+
 Tooling only: `make ci-local` gains `tidy-check` (`go mod tidy -diff`) and a full-history `gitleaks` scan (`scripts/ci-gitleaks.sh`, 8.30.1 pinned by sha256), replacing the retired GitHub Actions `security.yml`. It is THE gate before every merge and release tag.
 
 ## v0.39.0 — 2026-11-14
