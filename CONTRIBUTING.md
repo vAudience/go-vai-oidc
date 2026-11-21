@@ -6,7 +6,7 @@ backward compatibility is a first-class concern.
 
 ## Building and Testing
 
-Before opening a pull request, run the full local gate:
+GitHub Actions are disabled. **`make ci-local` is THE gate** and must pass before every merge and every release tag. It runs, in order: gofmt, build, vet, `go test -race`, golangci-lint, `go mod tidy -diff`, govulncheck (at the pinned toolchain) and a full-history gitleaks scan. The individual commands:
 
 ```sh
 go build ./...

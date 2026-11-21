@@ -38,27 +38,38 @@ TOOLCHAIN_PIN     := $(shell awk '$$1 == "toolchain" { print $$2 }' go.mod)
 
 .DEFAULT_GOAL := help
 .NOTPARALLEL:
-.PHONY: help ci-local fmt-check build vet test lint vuln clean
+.PHONY: help ci-local fmt-check build vet test lint vuln tidy-check gitleaks clean
 
 help:
 	@echo "go-vai-oidc local gate (replaces GitHub Actions)"
 	@echo ""
-	@echo "  make ci-local    run the full gate: fmt-check build vet test lint vuln"
+	@echo "  make ci-local    run the full gate: fmt-check build vet test lint tidy-check vuln gitleaks"
 	@echo ""
 	@echo "  make fmt-check   fail if any file is not gofmt-clean"
 	@echo "  make build       go build ./..."
 	@echo "  make vet         go vet ./..."
 	@echo "  make test        go test -race -coverprofile=$(COVERPROFILE) ./..."
 	@echo "  make lint        golangci-lint run ./... (config: .golangci.yml)"
+	@echo "  make tidy-check  fail if go.mod / go.sum are not tidy (go mod tidy -diff)"
 	@echo "  make vuln        govulncheck ./..."
+	@echo "  make gitleaks    full-history secret scan (gitleaks 8.30.1, sha256-pinned)"
 	@echo "  make clean       remove $(COVERPROFILE)"
 	@echo ""
 	@echo "  tools: golangci-lint $(GOLANGCI_VERSION), govulncheck $(GOVULNCHECK_VERSION)"
 	@echo "  vuln runs at the go.mod toolchain pin: $(TOOLCHAIN_PIN)"
 
-ci-local: fmt-check build vet test lint vuln
+ci-local: fmt-check build vet test lint tidy-check vuln gitleaks
 	@echo ""
-	@echo "ci-local: PASS"
+	@echo "ci-local: all gates passed"
+
+tidy-check:
+	@echo "==> go mod tidy -diff"
+	$(GO) mod tidy -diff
+
+# Replaces the retired .github/workflows/security.yml 1:1: same pinned gitleaks, full history.
+gitleaks:
+	@echo "==> gitleaks (full history)"
+	./scripts/ci-gitleaks.sh
 
 # gofmt -l PRINTS the offending file names and exits 0, so the exit code alone
 # proves nothing. Fail when the output is non-empty.
