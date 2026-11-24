@@ -837,7 +837,7 @@ encrypted cookie for middleware-level tests.
 
 ## Requirements & license
 
-- Go 1.25+ (dependency floor: `coreos/go-oidc/v3` and `golang.org/x/oauth2` require 1.25). Public
+- Go 1.26+ (since v0.40.0; built and scanned with toolchain go1.26.11, the stack-wide pin). Public
   dependencies only: `github.com/coreos/go-oidc/v3`, `github.com/go-chi/chi/v5`,
   `golang.org/x/oauth2`.
 - Licensed under **Apache-2.0** (see `LICENSE`). Security policy: `SECURITY.md`. Contributions:

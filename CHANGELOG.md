@@ -1,7 +1,15 @@
 # Changelog
 
-## Unreleased
+## v0.40.0 — 2026-11-24
 
+**Go 1.26 consumer floor: `go 1.26.0` + `toolchain go1.26.11`** (go-vai-oidc#33, stack-wide move vaik8s#2284).
+No API, cookie or configuration change.
+
+- ⚠ **`go.mod` `go 1.25.0` → `go 1.26.0`.** A consumer still on Go 1.25 cannot build v0.40.0; every stack
+  consumer is on 1.26.11. Minor bump because this module is pre-1.0 and the floor is the only change. The
+  `toolchain go1.26.11` pin (v0.38.0) is unchanged; `make vuln` analyses it and reports 0 reachable.
+- Lint tool pin `GOLANGCI_VERSION` v2.3.0 → v2.13.2 (built with Go 1.26; v2.3.0 predates the 1.26 language
+  version). README requirements say Go 1.26+.
 - Tooling only: `scripts/ci-gitleaks.sh` updated to the canonical v10 (verbatim from vaik8s): it unsets `GITLEAKS_CONFIG*`, refuses any spelling of `disabledRules` in `.gitleaks.toml`, and runs a canary-by-use check of the effective config before the real scan.
 
 Tooling only: `make ci-local` gains `tidy-check` (`go mod tidy -diff`) and a full-history `gitleaks` scan (`scripts/ci-gitleaks.sh`, 8.30.1 pinned by sha256), replacing the retired GitHub Actions `security.yml`. It is THE gate before every merge and release tag.

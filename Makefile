@@ -9,7 +9,7 @@
 
 GO                ?= go
 GOLANGCI_LINT     ?= golangci-lint
-GOLANGCI_VERSION   = v2.3.0
+GOLANGCI_VERSION   = v2.13.2
 GOLANGCI_INSTALL   = go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_VERSION)
 GOVULNCHECK_VERSION = v1.8.0
 COVERPROFILE      ?= coverage.out
